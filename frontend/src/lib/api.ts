@@ -28,6 +28,8 @@ export interface TrendResponse {
   sma20?: number | null;
   sma50?: number | null;
   sma200?: number | null;
+  ema9?: number | null;
+  ema21?: number | null;
   slope10?: number | null;
   slope20?: number | null;
   slope50?: number | null;

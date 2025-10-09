@@ -19,6 +19,8 @@ class TrendDTO(BaseModel):
     sma20: Optional[float]
     sma50: Optional[float]
     sma200: Optional[float]
+    ema9: Optional[float]
+    ema21: Optional[float]
     slope10: Optional[float]
     slope20: Optional[float]
     slope50: Optional[float]
@@ -79,6 +81,10 @@ def _sma(s: pd.Series, n: int) -> pd.Series:
     return s.rolling(window=n, min_periods=n).mean()
 
 
+def _ema(s: pd.Series, n: int) -> pd.Series:
+    return s.ewm(span=n, adjust=False).mean()
+
+
 def _slope_pct_per_day(x: pd.Series, n: int) -> Optional[float]:
     if len(x) < n + n:
         return None
@@ -108,6 +114,8 @@ async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provid
             sma20=None,
             sma50=None,
             sma200=None,
+            ema9=None,
+            ema21=None,
             slope10=None,
             slope20=None,
             slope50=None,
@@ -121,6 +129,8 @@ async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provid
     sma20 = _sma(s, 20)
     sma50 = _sma(s, 50)
     sma200 = _sma(s, 200)
+    ema9 = _ema(s, 9)
+    ema21 = _ema(s, 21)
     price = float(s.iloc[-1])
     prev_close = float(s.iloc[-2]) if len(s) >= 2 else None
     dto = TrendDTO(
@@ -132,6 +142,8 @@ async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provid
         sma20=float(sma20.iloc[-1]) if not np.isnan(sma20.iloc[-1]) else None,
         sma50=float(sma50.iloc[-1]) if not np.isnan(sma50.iloc[-1]) else None,
         sma200=float(sma200.iloc[-1]) if not np.isnan(sma200.iloc[-1]) else None,
+        ema9=float(ema9.iloc[-1]) if not np.isnan(ema9.iloc[-1]) else None,
+        ema21=float(ema21.iloc[-1]) if not np.isnan(ema21.iloc[-1]) else None,
         slope10=_slope_pct_per_day(sma10, 10),
         slope20=_slope_pct_per_day(sma20, 20),
         slope50=_slope_pct_per_day(sma50, 50),
