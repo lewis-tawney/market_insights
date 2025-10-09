@@ -1,0 +1,84 @@
+# Logging configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Cache configuration
+cache:
+  ttl:
+    quotes: 15      # seconds
+    ohlc: 180       # seconds (3 minutes)
+    vix: 60         # seconds (1 minute)
+    computed: 30    # seconds
+  max_size: 4096
+  persist_dir: null
+  persist_computed: false
+
+# Rate limiting
+rate_limit:
+  requests_per_minute: 60
+
+modes:
+  default:
+    compass:
+      vix_level_veto: 24.0
+      vix_backwardation_veto: 0.0     # spot - 3m > 0 means backwardation
+      require_above_50dma: false
+      require_above_200dma: false
+    screen:
+      max_symbols: 25
+      weights:
+        pct_above_50dma_z: 0.4
+        breakout_flag: 0.4
+        vol_spike_capped: 0.2
+
+market_strength:
+  default_index_symbols: ["SPY", "QQQ", "IWM"]
+  default_breadth_universe: ["SPY", "QQQ", "IWM", "DIA", "XLK", "XLF", "XLV", "SMH", "XLU", "XLE"]
+  thresholds:
+    trend:
+      slope50_min: 0.0
+    volatility:
+      vix_risk_on_max: 15
+      vix_risk_off_min: 25
+      vix_pop_pct: 5.0
+    breadth:
+      pct_above50_risk_on: 0.60
+      pct_above50_risk_off: 0.40
+    volume:
+      vol_ratio_attention: 1.50
+      vol_ratio_calm: 0.80
+    momentum:
+      m1_pos: 0.0
+      m3_pos: 0.0
+    summary:
+      vix_veto_level: 30
+
+breadth:
+  data_root: ${BREADTH_STOOQ_ROOT:-data/daily}
+  vol_min_shares: 100000
+  min_dollar_volume: 250000
+  min_price: 1.0
+  dv20_min_usd: 2500000
+  epsilon_price: 0.01
+  r10_laplace: 0.0
+  exclude_patterns: ["-U$", "-WS$", "-WT$", "-R$", "-P$", "-W$"]
+  universe_type: "common"
+
+breadth_materialize:
+  enabled: true
+  paths:
+    individual: engine/out/fact_breadth_individual.parquet
+    events: engine/out/fact_breadth_events.parquet
+    daily: engine/out/breadth_daily.parquet
+    watermark: engine/out/breadth_watermark.parquet
+  partitioning:
+    individual_by_date: true
+    events_by_date_and_type: true
+  dedupe_on_write: true
+
+## Historical data processing mode
+
+# Deprecated alias for one release (will WARN if used)
+stooq:
+  data_root: ${STOOQ_DATA_ROOT:-}

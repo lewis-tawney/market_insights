@@ -1,0 +1,77 @@
+// frontend/src/lib/api.ts
+// Resolve API base: env override or default to '/api' for Vite proxy/nginx
+export const BASE = (import.meta as any).env?.VITE_API_BASE ?? "/api";
+
+function join(base: string, path: string): string {
+  const b = base.endsWith("/") ? base.slice(0, -1) : base;
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `${b}${p}`;
+}
+
+export async function getJSON<T>(path: string): Promise<T> {
+  const url = join(BASE, path);
+  const res = await fetch(url);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
+  }
+  const data = (await res.json()) as T;
+  return data;
+}
+
+export interface TrendResponse {
+  symbol: string;
+  as_of: string;
+  price: number;
+  prev_close?: number | null;
+  sma10?: number | null;
+  sma20?: number | null;
+  sma50?: number | null;
+  sma200?: number | null;
+  slope10?: number | null;
+  slope20?: number | null;
+  slope50?: number | null;
+  slope200?: number | null;
+  above10?: boolean | null;
+  above20?: boolean | null;
+  above50?: boolean | null;
+  above200?: boolean | null;
+}
+
+export interface VixResponse {
+  as_of: string;
+  value: number | null;
+  avg7: number | null;
+}
+
+// Metrics endpoints
+export async function fetchTrend(symbol: string): Promise<TrendResponse> {
+  return getJSON<TrendResponse>(`/metrics/trend?symbol=${encodeURIComponent(symbol)}`);
+}
+
+export async function fetchRSI(symbol: string) {
+  return getJSON(`/metrics/rsi?symbol=${encodeURIComponent(symbol)}`);
+}
+
+export async function fetchMomentum(symbol: string) {
+  return getJSON(`/metrics/momentum?symbol=${encodeURIComponent(symbol)}`);
+}
+
+export async function fetchReturns(symbol: string, windows = "MTD,YTD") {
+  return getJSON(`/metrics/returns?symbol=${encodeURIComponent(symbol)}&windows=${encodeURIComponent(windows)}`);
+}
+
+export async function fetchVIX(): Promise<VixResponse> {
+  return getJSON<VixResponse>(`/metrics/vix`);
+}
+
+// Breadth endpoints removed - not needed
+
+// Back-compat api object (if imported elsewhere)
+export const api = {
+  trend: fetchTrend,
+  rsi: fetchRSI,
+  momentum: fetchMomentum,
+  returns: fetchReturns,
+  vix: fetchVIX,
+};

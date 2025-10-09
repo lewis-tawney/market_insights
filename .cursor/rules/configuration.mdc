@@ -1,0 +1,50 @@
+---
+globs: config.yaml,config.example.yaml,*.yaml,*.yml
+description: Configuration management guidelines
+---
+
+# Configuration Management Rules
+
+## Configuration Files
+- [config.yaml](mdc:config.yaml) - Main configuration file
+- [config.example.yaml](mdc:config.example.yaml) - Example configuration template
+- Use YAML format for configuration files
+- Keep sensitive data in environment variables
+
+## Configuration Structure
+```yaml
+# Database settings
+database:
+  host: localhost
+  port: 5432
+  name: market_insights
+
+# API settings
+api:
+  host: 0.0.0.0
+  port: 8000
+  debug: false
+
+# Data processing
+data:
+  providers: ["stooq", "yahoo"]
+  output_path: "engine/out"
+```
+
+## Environment Variables
+- Use `.env` files for local development
+- Never commit sensitive data to version control
+- Document all required environment variables
+- Use consistent naming conventions (UPPER_SNAKE_CASE)
+
+## Configuration Loading
+- Load configuration at application startup
+- Validate configuration values
+- Provide sensible defaults
+- Handle missing configuration gracefully
+
+## Security Guidelines
+- Never hardcode secrets in configuration files
+- Use environment-specific configurations
+- Implement proper secret management
+- Validate configuration in production

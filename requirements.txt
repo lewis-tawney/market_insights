@@ -1,0 +1,26 @@
+# Core web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Data processing
+pandas==2.3.1
+numpy==2.0.2
+pyarrow>=16.1
+
+# Configuration
+PyYAML==6.0.2
+
+# HTTP client
+httpx==0.28.1
+requests==2.32.3
+
+# Type hints and validation
+pydantic==2.11.7
+pydantic_core==2.33.2
+typing_extensions==4.13.2
+
+# Utilities
+python-dateutil==2.9.0.post0
+pytz==2025.2
+
+# Charts were rendered in the frontend; no Python chart packages required.

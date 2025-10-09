@@ -1,0 +1,47 @@
+---
+globs: app/**/*.py,engine/**/*.py
+description: FastAPI backend development guidelines
+---
+
+# FastAPI Backend Development Rules
+
+## Tech Stack
+- Python 3.9+ with FastAPI
+- Pydantic for data validation
+- Pandas/NumPy for data processing
+- PyArrow for Parquet file handling
+- Uvicorn for ASGI server
+
+## Code Style and Structure
+- Use type hints for all functions and parameters
+- Prefer functional programming over classes
+- Use descriptive variable names with auxiliary verbs (e.g., `is_active`, `has_data`)
+- Follow snake_case for files, functions, and variables
+- Use PascalCase for classes
+
+## FastAPI Best Practices
+- Use dependency injection for shared resources
+- Implement proper error handling with HTTPException
+- Use Pydantic models for request/response validation
+- Structure routes in separate modules under `app/routes/`
+- Use async/await for I/O operations
+
+## Key Files and Structure
+- [app/main.py](mdc:app/main.py) - FastAPI application entry point
+- [app/config.py](mdc:app/config.py) - Configuration management
+- [app/routes/](mdc:app/routes/) - API route handlers
+- [engine/](mdc:engine/) - Data processing engine
+
+## Error Handling
+- Use early returns for error conditions
+- Implement proper logging with context
+- Use custom exception types for business logic errors
+- Handle external API failures gracefully
+- Validate input data with Pydantic models
+
+## Data Processing Guidelines
+- Use pandas for data manipulation
+- Save processed data as Parquet files in `engine/out/`
+- Implement incremental processing for large datasets
+- Use proper data types and null handling
+- Document data transformations clearly

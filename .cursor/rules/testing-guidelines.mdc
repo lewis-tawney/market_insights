@@ -1,0 +1,81 @@
+---
+globs: **/*.test.ts,**/*.test.tsx,**/*.test.js,**/*.test.jsx,**/test_*.py,**/tests/**/*.py
+description: Testing guidelines for frontend and backend
+---
+
+# Testing Guidelines
+
+## Frontend Testing (Vitest Preferred)
+
+### Setup and Mocking
+- Use `vi.mock()` before imports to mock dependencies
+- Keep 3-5 focused tests per file for maintainability
+- Avoid over-mocking - only mock what's necessary
+
+### Test Coverage
+- **Happy Path**: Test expected behavior with valid inputs
+- **Invalid Inputs**: Test error handling with malformed data
+- **Edge Cases**: Test boundary conditions and unusual scenarios
+
+### Test Structure
+- Use descriptive `describe` and `it` blocks
+- Group related tests in `describe` blocks
+- Use clear, action-oriented test names
+- Example: `describe('calculateTotal', () => { it('should calculate total for valid items', () => { ... }) })`
+
+### Frontend Test Files
+- Place tests alongside components: `frontend/src/components/Component.test.tsx`
+- Use `.test.ts` or `.test.tsx` extensions
+- Mock external API calls and browser APIs
+
+## Backend Testing (pytest only)
+
+### Type Annotations and Documentation
+- All tests must be fully typed with proper type hints
+- Include descriptive docstrings for all test functions
+- Place all tests under `./tests/` directory
+
+### Required Imports for TYPE_CHECKING
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from _pytest.capture import CaptureFixture
+    from _pytest.fixtures import FixtureRequest
+    from _pytest.logging import LogCaptureFixture
+    from _pytest.monkeypatch import MonkeyPatch
+    from pytest_mock.plugin import MockerFixture
+```
+
+### Test Coverage Requirements
+- **Mock External I/O**: Mock database calls, API requests, file operations
+- **Error Branches**: Test all error conditions and exception handling
+- **Guard Clauses**: Test input validation and preconditions
+- **Edge Cases**: Test boundary conditions and unusual inputs
+
+### Backend Test Structure
+- Mirror source structure: `tests/app/routes/test_api.py`
+- Use `test_` prefix for test files
+- Group tests by functionality in classes or describe blocks
+- Use fixtures for common setup/teardown
+
+### Test Organization
+- **Unit Tests**: Test individual functions and methods
+- **Integration Tests**: Test component interactions
+- **API Tests**: Test FastAPI endpoints and responses
+- **Data Processing Tests**: Test engine jobs and data transformations
+
+## Test Quality Standards
+
+### Both Frontend and Backend
+- Write tests that are easy to read and understand
+- Use meaningful assertions with clear error messages
+- Keep tests independent and isolated
+- Use descriptive test data and variable names
+- Avoid testing implementation details
+
+### Performance Considerations
+- Keep tests fast and lightweight
+- Use appropriate mocking to avoid slow I/O operations
+- Consider test parallelization for large test suites
+- Clean up resources in teardown when necessary
