@@ -10,9 +10,9 @@ interface Props {
 export function SearchBar({ symbol, onChange }: Props) {
   return (
     <div className="relative">
-      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
       <input
-        className="w-full pl-8 pr-2 py-2 border rounded"
+        className="w-full pl-8 pr-2 py-2 border border-gray-600 rounded bg-gray-700 text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-accent-500"
         value={symbol}
         placeholder="Search ticker"
         onChange={(e) => onChange(e.target.value.toUpperCase())}

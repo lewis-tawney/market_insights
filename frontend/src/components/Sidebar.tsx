@@ -8,6 +8,7 @@ interface SidebarProps {
 export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: "📊" },
+    { id: "journal", label: "Journal", icon: "📝" },
     // Future tabs can be added here
     // { id: "reports", label: "Reports", icon: "📈" },
     // { id: "analytics", label: "Analytics", icon: "📋" },
@@ -15,10 +16,10 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
   ];
 
   return (
-    <aside className="w-64 bg-gray-800 text-white h-screen flex flex-col">
+    <aside className="w-full bg-gray-800 text-gray-100 h-screen flex flex-col">
       {/* Sidebar Header */}
       <div className="p-4 border-b border-gray-700">
-        <h2 className="text-lg font-semibold">Market Insights</h2>
+        <h2 className="text-lg font-semibold text-gray-100">Market Insights</h2>
       </div>
 
       {/* Navigation Tabs */}
@@ -30,8 +31,8 @@ export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                 onClick={() => onTabChange(tab.id)}
                 className={`w-full flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors ${
                   activeTab === tab.id
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-300 hover:bg-gray-700 hover:text-white"
+                    ? "bg-primary-500 text-white hover:bg-primary-600"
+                    : "text-gray-300 hover:bg-gray-700 hover:text-gray-100"
                 }`}
               >
                 <span className="mr-3 text-lg">{tab.icon}</span>

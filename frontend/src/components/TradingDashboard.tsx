@@ -4,6 +4,7 @@ import TickerSummary from "./TickerSummary";
 import Sidebar from "./Sidebar";
 import { TickerCard } from "./TickerCard";
 import { IndexComparisonCard, INDEX_SERIES } from "./IndexComparisonCard";
+import JournalSection from "./JournalSection";
 
 const INDEX_COLOR_MAP: Record<string, string> = Object.fromEntries(
   INDEX_SERIES.map(({ symbol, color }) => [symbol, color])
@@ -45,11 +46,13 @@ export default function TradingDashboard() {
   }, []);
 
   return (
-    <div className="flex h-screen bg-gray-100">
-      {/* Main Sidebar */}
-      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
+    <div className="flex w-full min-h-screen bg-gray-900">
+      {/* Fixed Left Sidebar */}
+      <div className="w-64 border-r border-gray-700">
+        <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
+      </div>
 
-      {/* Main Content Area */}
+      {/* Fluid Content Area */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Main Content */}
         <main className="flex-1 overflow-auto p-4">
@@ -67,36 +70,32 @@ export default function TradingDashboard() {
                         loading={loading}
                       />
                     </div>
-                    <div className="text-sm font-medium text-gray-700 sm:text-right">
+                    <div className="text-sm font-medium text-gray-200 sm:text-right">
                       {formattedDate}
                     </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
-                  <div className="lg:col-span-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 h-full">
-                      {INDEX_SERIES.map(({ symbol: indexSymbol }) => (
-                        <TickerCard
-                          key={indexSymbol}
-                          symbol={indexSymbol}
-                          accentColor={INDEX_COLOR_MAP[indexSymbol]}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="lg:col-span-2">
-                    <IndexComparisonCard />
-                  </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-6">
+                  {INDEX_SERIES.map(({ symbol: indexSymbol }) => (
+                    <TickerCard
+                      key={indexSymbol}
+                      symbol={indexSymbol}
+                      accentColor={INDEX_COLOR_MAP[indexSymbol]}
+                    />
+                  ))}
+                </div>
+                
+                <div className="mb-6">
+                  <IndexComparisonCard />
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 mb-6">
-                  <TickerSummary
-                    key={`${symbol}-${refreshKey}-summary`}
-                    symbol={symbol}
-                  />
-                </div>
               </>
+            )}
+            {activeTab === "journal" && (
+              <div className="pb-6">
+                <JournalSection />
+              </div>
             )}
           </div>
         </main>

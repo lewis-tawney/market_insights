@@ -4,7 +4,6 @@ import {
   ISeriesApi,
   LineData,
   Time,
-  TimeScaleTickMarkFormatter,
   UTCTimestamp,
   createChart,
 } from "lightweight-charts";
@@ -45,6 +44,9 @@ function timeToDate(time: Time): Date {
   if (typeof time === "number") {
     return new Date(time * 1000);
   }
+  if (typeof time === "string") {
+    return new Date(time);
+  }
   return new Date(Date.UTC(time.year, time.month - 1, time.day));
 }
 
@@ -56,7 +58,7 @@ function formatTimeToPst(time: Time): string {
   return PST_DATE_FORMATTER.format(date);
 }
 
-const pstTickFormatter: TimeScaleTickMarkFormatter = (time) => formatTimeToPst(time);
+const pstTickFormatter = (time: Time) => formatTimeToPst(time);
 
 function getDateKey(iso: string): string {
   const date = new Date(iso);
@@ -136,13 +138,13 @@ export function IndexComparisonCard() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: 260,
+      height: 250,
       layout: {
-        background: { color: "#ffffff" },
-        textColor: "#1f2937",
+        background: { color: "#1f2937" },
+        textColor: "#f3f4f6",
       },
       rightPriceScale: {
-        borderColor: "#e5e7eb",
+        borderColor: "#4b5563",
         scaleMargins: {
           top: 0.1,
           bottom: 0.1,
@@ -152,14 +154,14 @@ export function IndexComparisonCard() {
         timeFormatter: formatTimeToPst,
       },
       timeScale: {
-        borderColor: "#e5e7eb",
+        borderColor: "#4b5563",
         timeVisible: true,
         secondsVisible: false,
         tickMarkFormatter: pstTickFormatter,
       },
       grid: {
-        horzLines: { color: "#f3f4f6" },
-        vertLines: { color: "#f3f4f6" },
+        horzLines: { color: "#374151" },
+        vertLines: { color: "#374151" },
       },
       handleScroll: {
         mouseWheel: false,
@@ -267,10 +269,10 @@ export function IndexComparisonCard() {
   }, []);
 
   return (
-    <div className="bg-white rounded-lg shadow p-4">
+    <div className="bg-gray-800 rounded shadow p-4">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold text-gray-800">Index Divergence</h2>
-        <div className="flex gap-3 text-sm text-gray-600">
+        <h2 className="text-xl font-bold text-gray-100">Index Divergence</h2>
+        <div className="flex gap-3 text-sm text-gray-400">
           {INDEX_SERIES.map(({ symbol, color }) => (
             <div key={symbol} className="flex items-center gap-1">
               <span
@@ -282,7 +284,7 @@ export function IndexComparisonCard() {
           ))}
         </div>
       </div>
-      <p className="text-xs text-gray-500 mb-4">
+      <p className="text-sm text-gray-400 mb-4">
         Five-minute performance for the latest full trading day vs previous close.
       </p>
       <div ref={containerRef} className="w-full" />
