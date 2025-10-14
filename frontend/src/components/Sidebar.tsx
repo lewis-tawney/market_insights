@@ -8,6 +8,7 @@ interface SidebarProps {
 export default function Sidebar({ activeTab, onTabChange }: SidebarProps) {
   const tabs = [
     { id: "dashboard", label: "Dashboard", icon: "📊" },
+    { id: "sectors", label: "Sectors", icon: "🏭" },
     { id: "journal", label: "Journal", icon: "📝" },
     // Future tabs can be added here
     // { id: "reports", label: "Reports", icon: "📈" },

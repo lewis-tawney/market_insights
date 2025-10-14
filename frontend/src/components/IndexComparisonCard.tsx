@@ -138,7 +138,7 @@ export function IndexComparisonCard() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: 250,
+      height: 240,
       layout: {
         background: { color: "#1f2937" },
         textColor: "#f3f4f6",

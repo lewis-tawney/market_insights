@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useRef } from "react";
 import { SearchBar } from "./SearchBar";
-import TickerSummary from "./TickerSummary";
 import Sidebar from "./Sidebar";
 import { TickerCard } from "./TickerCard";
 import { IndexComparisonCard, INDEX_SERIES } from "./IndexComparisonCard";
 import JournalSection from "./JournalSection";
+import SectorWatchlist from "./SectorWatchlist";
+import SectorEtfOverview from "./SectorEtfOverview";
 
 const INDEX_COLOR_MAP: Record<string, string> = Object.fromEntries(
   INDEX_SERIES.map(({ symbol, color }) => [symbol, color])
@@ -76,21 +77,33 @@ export default function TradingDashboard() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-6">
-                  {INDEX_SERIES.map(({ symbol: indexSymbol }) => (
-                    <TickerCard
-                      key={indexSymbol}
-                      symbol={indexSymbol}
-                      accentColor={INDEX_COLOR_MAP[indexSymbol]}
-                    />
-                  ))}
-                </div>
-                
-                <div className="mb-6">
-                  <IndexComparisonCard />
-                </div>
+                <div className="flex flex-col gap-6 xl:flex-row">
+                  <div className="flex-1 space-y-6">
+                    <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+                      {INDEX_SERIES.map(({ symbol: indexSymbol }) => (
+                        <TickerCard
+                          key={indexSymbol}
+                          symbol={indexSymbol}
+                          accentColor={INDEX_COLOR_MAP[indexSymbol]}
+                        />
+                      ))}
+                    </div>
 
+                    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+                      <IndexComparisonCard />
+                    </div>
+                  </div>
+
+                  <div className="xl:w-80 xl:flex-shrink-0">
+                    <SectorEtfOverview />
+                  </div>
+                </div>
               </>
+            )}
+            {activeTab === "sectors" && (
+              <div className="pb-6">
+                <SectorWatchlist />
+              </div>
             )}
             {activeTab === "journal" && (
               <div className="pb-6">
