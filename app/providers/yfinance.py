@@ -13,10 +13,25 @@ class YFinanceProvider:
     """Thin async wrapper around yfinance for the dashboard endpoints."""
 
     async def get_ohlc(
-        self, symbol: str, period: str = "2y", interval: str = "1d"
+        self,
+        symbol: str,
+        period: str = "2y",
+        interval: str = "1d",
+        *,
+        auto_adjust: bool = True,
     ) -> List[NumericRecord]:
+        """Fetch historical OHLCV records.
+
+        Accepts ``auto_adjust`` to align with callers that need either adjusted
+        (default) or unadjusted prices. This fixes unexpected keyword errors
+        from routes that pass ``auto_adjust=False`` (e.g., momentum endpoint).
+        """
         df = await asyncio.to_thread(
-            self._download_history, symbol, period=period, interval=interval
+            self._download_history,
+            symbol,
+            period=period,
+            interval=interval,
+            auto_adjust=auto_adjust,
         )
         if df is None or df.empty:
             return []
@@ -78,6 +93,8 @@ class YFinanceProvider:
         return symbols[:limit] if limit else symbols
 
     @staticmethod
-    def _download_history(symbol: str, period: str, interval: str):
+    def _download_history(
+        symbol: str, *, period: str, interval: str, auto_adjust: bool
+    ):
         ticker = yf.Ticker(symbol)
-        return ticker.history(period=period, interval=interval)
+        return ticker.history(period=period, interval=interval, auto_adjust=auto_adjust)

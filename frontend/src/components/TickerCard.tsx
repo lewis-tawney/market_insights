@@ -62,15 +62,15 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
 
   if (loading) {
     return (
-      <div className="bg-gray-800 rounded shadow p-4">
+      <div className="bg-gray-800 rounded shadow p-3.5">
         <div className="animate-pulse">
-          <div className="h-4 bg-gray-600 rounded w-1/4 mb-2"></div>
-          <div className="h-6 bg-gray-600 rounded w-1/2 mb-4"></div>
+          <div className="h-3.5 bg-gray-600 rounded w-1/4 mb-2"></div>
+          <div className="h-5 bg-gray-600 rounded w-1/2 mb-3"></div>
           <div className="space-y-2">
-            <div className="h-3 bg-gray-600 rounded"></div>
-            <div className="h-3 bg-gray-600 rounded"></div>
-            <div className="h-3 bg-gray-600 rounded"></div>
-            <div className="h-3 bg-gray-600 rounded"></div>
+            <div className="h-2.5 bg-gray-600 rounded"></div>
+            <div className="h-2.5 bg-gray-600 rounded"></div>
+            <div className="h-2.5 bg-gray-600 rounded"></div>
+            <div className="h-2.5 bg-gray-600 rounded"></div>
           </div>
         </div>
       </div>
@@ -79,16 +79,16 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
 
   if (error) {
     return (
-      <div className="bg-gray-800 rounded shadow p-4">
+      <div className="bg-gray-800 rounded shadow p-3.5">
         <div className="text-red-400 text-sm">{error}</div>
       </div>
     );
   }
 
   return (
-    <div className="bg-gray-800 rounded shadow p-4">
+    <div className="bg-gray-800 rounded shadow p-3.5">
       {/* Header */}
-      <div className="mb-3">
+      <div className="mb-2.5">
         <div className="flex items-center gap-2">
           {accentColor ? (
             <span
@@ -96,16 +96,16 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
               style={{ backgroundColor: accentColor }}
             />
           ) : null}
-          <div className="text-xl font-bold text-gray-100">{symbol}</div>
+          <div className="font-bold text-gray-100 text-[19px]">{symbol}</div>
         </div>
       </div>
 
       {/* Price and Daily Change */}
-      <div className="flex items-end gap-3 mb-4">
-        <div className="text-3xl font-bold text-gray-100">
+      <div className="flex items-end gap-2.5 mb-3.5">
+        <div className="font-bold text-gray-100 text-[26px]">
           {formatPrice(data?.price)}
         </div>
-        <div className={`text-lg font-semibold ${
+        <div className={`font-semibold text-[17px] ${
           dailyPct && dailyPct < 0 ? "text-red-400" : "text-primary-500"
         }`}>
           {formatPercent(dailyPct)}
@@ -114,10 +114,10 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
 
       {/* SMA Distance from Price */}
       <div className="space-y-1">
-        <div className="text-sm text-gray-400 mb-1 text-center">SMA</div>
+        <div className="text-xs text-gray-400 mb-1 text-center">SMA</div>
 
         <div className="space-y-0.5">
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
+          <div className="flex items-center justify-between text-[11px] px-2 py-0.5">
             <span className="text-gray-400 font-mono w-8 text-left">10d</span>
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.sma10)}</span>
@@ -127,7 +127,7 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
+          <div className="flex items-center justify-between text-[11px] px-2 py-0.5">
             <span className="text-gray-400 font-mono w-8 text-left">20d</span>
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.sma20)}</span>
@@ -137,7 +137,7 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
+          <div className="flex items-center justify-between text-[11px] px-2 py-0.5">
             <span className="text-gray-400 font-mono w-8 text-left">50d</span>
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.sma50)}</span>
@@ -147,7 +147,7 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
+          <div className="flex items-center justify-between text-[11px] px-2 py-0.5">
             <span className="text-gray-400 font-mono w-8 text-left">200d</span>
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.sma200)}</span>
@@ -161,10 +161,10 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
 
       {/* EMA */}
       <div className="space-y-1">
-        <div className="text-sm text-gray-400 mb-1 text-center">EMA</div>
+        <div className="text-xs text-gray-400 mb-1 text-center">EMA</div>
         
         <div className="space-y-0.5">
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
+          <div className="flex items-center justify-between text-[11px] px-2 py-0.5">
             <span className="text-gray-400 font-mono w-8 text-left">9d</span>
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.ema9)}</span>
@@ -174,7 +174,7 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
+          <div className="flex items-center justify-between text-[11px] px-2 py-0.5">
             <span className="text-gray-400 font-mono w-8 text-left">21d</span>
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.ema21)}</span>

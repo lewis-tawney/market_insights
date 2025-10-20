@@ -12,9 +12,9 @@ class YFinanceProvider:
     """Provider supplying live data directly from Yahoo Finance."""
 
     @staticmethod
-    def _history(symbol: str, period: str, interval: str):
+    def _history(symbol: str, period: str, interval: str, auto_adjust: bool):
         ticker = yf.Ticker(symbol)
-        return ticker.history(period=period, interval=interval)
+        return ticker.history(period=period, interval=interval, auto_adjust=auto_adjust)
 
     @staticmethod
     def _fast_info(symbol: str) -> Dict[str, Any]:
@@ -25,9 +25,14 @@ class YFinanceProvider:
             return {}
 
     async def get_ohlc(
-        self, symbol: str, *, period: str = "2y", interval: str = "1d"
+        self,
+        symbol: str,
+        *,
+        period: str = "2y",
+        interval: str = "1d",
+        auto_adjust: bool = False,
     ) -> List[Dict[str, Any]]:
-        df = await asyncio.to_thread(self._history, symbol, period, interval)
+        df = await asyncio.to_thread(self._history, symbol, period, interval, auto_adjust)
         if df is None or df.empty:
             return []
 

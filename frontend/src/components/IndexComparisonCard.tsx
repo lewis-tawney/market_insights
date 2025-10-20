@@ -138,13 +138,14 @@ export function IndexComparisonCard() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: 240,
+      height: 225,
       layout: {
         background: { color: "#1f2937" },
         textColor: "#f3f4f6",
       },
       rightPriceScale: {
-        borderColor: "#4b5563",
+        borderColor: "#1f2937",
+        borderVisible: false,
         scaleMargins: {
           top: 0.1,
           bottom: 0.1,
@@ -154,7 +155,8 @@ export function IndexComparisonCard() {
         timeFormatter: formatTimeToPst,
       },
       timeScale: {
-        borderColor: "#4b5563",
+        borderColor: "#1f2937",
+        borderVisible: false,
         timeVisible: true,
         secondsVisible: false,
         tickMarkFormatter: pstTickFormatter,
@@ -269,10 +271,10 @@ export function IndexComparisonCard() {
   }, []);
 
   return (
-    <div className="bg-gray-800 rounded shadow p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xl font-bold text-gray-100">Index Divergence</h2>
-        <div className="flex gap-3 text-sm text-gray-400">
+    <div className="bg-gray-800 rounded shadow p-3.5">
+      <div className="flex items-center justify-between mb-2.5">
+        <h2 className="font-semibold text-gray-100 text-[19px]">Index Divergence</h2>
+        <div className="flex gap-3 text-[13px] text-gray-400">
           {INDEX_SERIES.map(({ symbol, color }) => (
             <div key={symbol} className="flex items-center gap-1">
               <span
@@ -284,7 +286,7 @@ export function IndexComparisonCard() {
           ))}
         </div>
       </div>
-      <p className="text-sm text-gray-400 mb-4">
+      <p className="text-[13px] text-gray-400 mb-3.5">
         Five-minute performance for the latest full trading day vs previous close.
       </p>
       <div ref={containerRef} className="w-full" />

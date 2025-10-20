@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { TrendResponse } from "../lib/api";
-import { fetchTrend } from "../lib/api";
+import type { TrendResponse, MomentumResponse } from "../lib/api";
+import { fetchTrend, fetchMomentum } from "../lib/api";
 
 type Sector = {
   id: string;
@@ -27,6 +27,21 @@ type TrendCache = {
   version: number;
   date: string;
   entries: Record<string, TrendCacheEntry>;
+};
+
+// Momentum cache for per-ticker momentum metrics (5D, off 52W high)
+const MOMENTUM_CACHE_KEY = "market-insights:sector-momentum-cache";
+const MOMENTUM_CACHE_VERSION = 1;
+
+type MomentumCacheEntry = {
+  data: MomentumResponse;
+  savedAt: string;
+};
+
+type MomentumCache = {
+  version: number;
+  date: string;
+  entries: Record<string, MomentumCacheEntry>;
 };
 
 const DEFAULT_SECTORS: Sector[] = [
@@ -391,6 +406,54 @@ function saveTrendCache(cache: TrendCache) {
   }
 }
 
+function loadMomentumCache(expectedDate: string): MomentumCache {
+  if (typeof window === "undefined") {
+    return { version: MOMENTUM_CACHE_VERSION, date: expectedDate, entries: {} };
+  }
+  try {
+    const raw = window.localStorage.getItem(MOMENTUM_CACHE_KEY);
+    if (!raw) {
+      return { version: MOMENTUM_CACHE_VERSION, date: expectedDate, entries: {} };
+    }
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.version !== MOMENTUM_CACHE_VERSION ||
+      parsed.date !== expectedDate
+    ) {
+      return { version: MOMENTUM_CACHE_VERSION, date: expectedDate, entries: {} };
+    }
+    const src = parsed.entries || {};
+    const entries: Record<string, MomentumCacheEntry> = {};
+    for (const [ticker, entry] of Object.entries(src as Record<string, MomentumCacheEntry>)) {
+      if (
+        entry &&
+        typeof entry === "object" &&
+        (entry as MomentumCacheEntry).data &&
+        typeof (entry as MomentumCacheEntry).data === "object" &&
+        typeof ((entry as MomentumCacheEntry).data as MomentumResponse).symbol === "string"
+      ) {
+        entries[ticker] = entry as MomentumCacheEntry;
+      }
+    }
+    return { version: MOMENTUM_CACHE_VERSION, date: expectedDate, entries };
+  } catch {
+    return { version: MOMENTUM_CACHE_VERSION, date: expectedDate, entries: {} };
+  }
+}
+
+function saveMomentumCache(cache: MomentumCache) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(MOMENTUM_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // best effort persistence; ignore quota failures
+  }
+}
+
 function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined) {
     return "—";
@@ -428,6 +491,18 @@ function computeChange(data: TrendResponse | null | undefined): number | null {
     return null;
   }
   return ((data.price - data.prev_close) / data.prev_close) * 100;
+}
+
+// Deterministic color by sector id for group accents
+function colorForSectorId(id: string): string {
+  // Simple string hash -> hue
+  let h = 0;
+  for (let i = 0; i < id.length; i++) {
+    h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  }
+  const hue = h % 360;
+  // Use pleasant saturation/lightness for dark UI
+  return `hsl(${hue} 70% 55%)`;
 }
 
 type ToneClasses = {
@@ -578,6 +653,7 @@ function TrendSignals({ data }: { data: TrendResponse | null | undefined }) {
 export default function SectorWatchlist(): React.ReactElement {
   const [sectors, setSectors] = useState<Sector[]>(() => loadInitialSectors());
   const [tickerStates, setTickerStates] = useState<Record<string, TickerState>>({});
+  const [momentumMap, setMomentumMap] = useState<Record<string, MomentumResponse | null>>({});
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [inputErrors, setInputErrors] = useState<Record<string, string | null>>({});
   const [refreshKey, setRefreshKey] = useState(0);
@@ -589,6 +665,8 @@ export default function SectorWatchlist(): React.ReactElement {
   const [filterTerm, setFilterTerm] = useState("");
   const [sortKey, setSortKey] = useState<"performance" | "breadth" | "name">("performance");
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(() => new Set());
+  const [stockSortKey, setStockSortKey] = useState<"symbol" | "sector" | "day" | "r5d" | "off52w">("day");
+  const [stockSortDir, setStockSortDir] = useState<"desc" | "asc">("desc");
   const sortOptions: Array<{ key: "performance" | "breadth" | "name"; label: string }> = [
     { key: "performance", label: "Performance" },
     { key: "breadth", label: "Breadth" },
@@ -620,6 +698,21 @@ export default function SectorWatchlist(): React.ReactElement {
       });
     });
     return Array.from(dedup);
+  }, [sectors]);
+
+  // Map each ticker to its first owning sector (id + name) for display/coloring
+  const tickerSectorMap = useMemo(() => {
+    const map: Record<string, { id: string; name: string } | undefined> = {};
+    for (const sector of sectors) {
+      for (const t of sector.tickers) {
+        const tick = sanitizeTicker(t);
+        if (!tick) continue;
+        if (!map[tick]) {
+          map[tick] = { id: sector.id, name: sector.name };
+        }
+      }
+    }
+    return map;
   }, [sectors]);
 
   const leaderboard = useMemo(() => {
@@ -757,6 +850,73 @@ export default function SectorWatchlist(): React.ReactElement {
       if (mutated) {
         cache = { version: TREND_CACHE_VERSION, date: todayKey, entries };
         saveTrendCache(cache);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [allTickers, refreshKey]);
+
+  // Load momentum metrics (5D, off 52W high) for all tickers, cached per day
+  useEffect(() => {
+    const refreshRequested = lastRefreshKeyRef.current !== refreshKey;
+    lastRefreshKeyRef.current = refreshKey;
+
+    const todayKey = getTodayKey();
+    let cache = loadMomentumCache(todayKey);
+
+    const next: Record<string, MomentumResponse | null> = {};
+    const toFetch: string[] = [];
+
+    allTickers.forEach((ticker) => {
+      const cached = cache.entries[ticker];
+      if (cached && !refreshRequested) {
+        next[ticker] = cached.data;
+      } else {
+        next[ticker] = cached?.data ?? null;
+        toFetch.push(ticker);
+      }
+    });
+
+    setMomentumMap(next);
+
+    if (!toFetch.length) return;
+
+    let alive = true;
+    (async () => {
+      const results = await Promise.all(
+        toFetch.map(async (ticker) => {
+          try {
+            const data = await fetchMomentum(ticker);
+            return { ticker, data };
+          } catch {
+            return { ticker, data: null as MomentumResponse | null };
+          }
+        })
+      );
+      if (!alive) return;
+
+      setMomentumMap((prev) => {
+        const merged = { ...prev } as Record<string, MomentumResponse | null>;
+        results.forEach(({ ticker, data }) => {
+          if (data) merged[ticker] = data;
+        });
+        return merged;
+      });
+
+      const entries = { ...cache.entries } as MomentumCache["entries"];
+      const savedAt = new Date().toISOString();
+      let mutated = false;
+      results.forEach(({ ticker, data }) => {
+        if (data) {
+          entries[ticker] = { data, savedAt };
+          mutated = true;
+        }
+      });
+      if (mutated) {
+        cache = { version: MOMENTUM_CACHE_VERSION, date: todayKey, entries };
+        saveMomentumCache(cache);
       }
     })();
 
@@ -957,9 +1117,7 @@ export default function SectorWatchlist(): React.ReactElement {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h3 className="text-base font-semibold text-gray-100">Sectors</h3>
-            <p className="text-xs text-gray-400">
-              Quickly scan breadth and performance by grouping tickers you care about.
-            </p>
+            <p className="text-xs text-gray-400">Quickly scan performance by sector groups.</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
             <input
@@ -994,6 +1152,11 @@ export default function SectorWatchlist(): React.ReactElement {
             </button>
           </div>
         </div>
+
+        {/* Content switches: Performance view (existing) vs Breadth table */}
+        {sortKey !== "breadth" ? (
+          <>
+        {/* Removed Sector Groups Overview table above sector groups */}
 
         {(leaderboard.winners.length || leaderboard.losers.length) ? (
           <div className="grid gap-4 md:grid-cols-2">
@@ -1049,14 +1212,167 @@ export default function SectorWatchlist(): React.ReactElement {
             </div>
           </div>
         ) : null}
+          </>
+        ) : (
+          // Breadth: Stock-level table across all tracked tickers
+          <div className="rounded-lg border border-gray-700 bg-gray-900/40">
+            <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                Stocks Overview
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  className="rounded-md border border-gray-700 px-2 py-0.5 text-[11px] text-gray-300 hover:border-primary-500 hover:text-primary-400"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+            <div className="overflow-auto">
+              <table className="min-w-full text-sm text-gray-200">
+                <thead className="text-gray-400">
+                  <tr>
+                    <th
+                      className="px-3 py-2 text-left font-medium cursor-pointer select-none"
+                      onClick={() => {
+                        setStockSortDir((prev) => (stockSortKey === "symbol" ? (prev === "desc" ? "asc" : "desc") : "asc"));
+                        setStockSortKey("symbol");
+                      }}
+                    >
+                      Ticker {stockSortKey === "symbol" ? (stockSortDir === "desc" ? "▼" : "▲") : ""}
+                    </th>
+                    <th
+                      className="px-3 py-2 text-left font-medium cursor-pointer select-none"
+                      onClick={() => {
+                        setStockSortDir((prev) => (stockSortKey === "sector" ? (prev === "desc" ? "asc" : "desc") : "asc"));
+                        setStockSortKey("sector");
+                      }}
+                    >
+                      Sector {stockSortKey === "sector" ? (stockSortDir === "desc" ? "▼" : "▲") : ""}
+                    </th>
+                    <th
+                      className="px-3 py-2 text-right font-medium cursor-pointer select-none"
+                      onClick={() => {
+                        setStockSortDir((prev) => (stockSortKey === "day" ? (prev === "desc" ? "asc" : "desc") : "desc"));
+                        setStockSortKey("day");
+                      }}
+                    >
+                      % Day {stockSortKey === "day" ? (stockSortDir === "desc" ? "▼" : "▲") : ""}
+                    </th>
+                    <th
+                      className="px-3 py-2 text-right font-medium cursor-pointer select-none"
+                      onClick={() => {
+                        setStockSortDir((prev) => (stockSortKey === "r5d" ? (prev === "desc" ? "asc" : "desc") : "desc"));
+                        setStockSortKey("r5d");
+                      }}
+                    >
+                      % 5D {stockSortKey === "r5d" ? (stockSortDir === "desc" ? "▼" : "▲") : ""}
+                    </th>
+                    <th
+                      className="px-3 py-2 text-right font-medium cursor-pointer select-none"
+                      onClick={() => {
+                        setStockSortDir((prev) => (stockSortKey === "off52w" ? (prev === "desc" ? "asc" : "desc") : "desc"));
+                        setStockSortKey("off52w");
+                      }}
+                    >
+                      % off 52W High {stockSortKey === "off52w" ? (stockSortDir === "desc" ? "▼" : "▲") : ""}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800">
+                  {(() => {
+                    type Row = {
+                      symbol: string;
+                      sectorId: string;
+                      sectorName: string;
+                      day: number | null;
+                      r5d: number | null;
+                      off52w: number | null;
+                    };
+                    const term = filterTerm.trim().toLowerCase();
+                    const rows: Row[] = allTickers
+                      .map((symbol) => {
+                        const trend = tickerStates[symbol]?.data ?? null;
+                        const mom = momentumMap[symbol] ?? null;
+                        const sectorInfo = tickerSectorMap[symbol];
+                        return {
+                          symbol,
+                          sectorId: sectorInfo?.id ?? "",
+                          sectorName: sectorInfo?.name ?? "",
+                          day: computeChange(trend),
+                          r5d: mom?.r5d_pct != null ? mom.r5d_pct * 100 : null,
+                          off52w: mom?.off_52w_high_pct != null ? mom.off_52w_high_pct * 100 : null,
+                        };
+                      })
+                      .filter((row) => {
+                        if (!term) return true;
+                        return (
+                          row.symbol.toLowerCase().includes(term) ||
+                          row.sectorName.toLowerCase().includes(term)
+                        );
+                      });
+
+                    const val = (x: number | null): number => {
+                      if (x == null || Number.isNaN(x)) return stockSortDir === "desc" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+                      return x;
+                    };
+
+                    rows.sort((a, b) => {
+                      if (stockSortKey === "symbol") {
+                        return stockSortDir === "desc"
+                          ? b.symbol.localeCompare(a.symbol)
+                          : a.symbol.localeCompare(b.symbol);
+                      }
+                      if (stockSortKey === "sector") {
+                        return stockSortDir === "desc"
+                          ? b.sectorName.localeCompare(a.sectorName)
+                          : a.sectorName.localeCompare(b.sectorName);
+                      }
+                      const aVal = stockSortKey === "day" ? a.day : stockSortKey === "r5d" ? a.r5d : a.off52w;
+                      const bVal = stockSortKey === "day" ? b.day : stockSortKey === "r5d" ? b.r5d : b.off52w;
+                      const da = val(aVal);
+                      const db = val(bVal);
+                      return stockSortDir === "desc" ? db - da : da - db;
+                    });
+
+                    return rows.map(({ symbol, sectorId, sectorName, day, r5d, off52w }) => {
+                      const dayDisp = formatPercent(day);
+                      const r5dDisp = formatPercent(r5d);
+                      const offDisp = formatPercent(off52w);
+                      return (
+                        <tr key={`${symbol}-${sectorId}`}>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <span className="h-3 w-1 rounded-full" style={{ backgroundColor: colorForSectorId(sectorId) }} />
+                              <span className="font-mono text-xs text-gray-100">{symbol}</span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap text-[11px] text-gray-400">
+                            {sectorName || "—"}
+                          </td>
+                          <td className={`px-3 py-2 text-right ${dayDisp.tone}`}>{dayDisp.text}</td>
+                          <td className={`px-3 py-2 text-right ${r5dDisp.tone}`}>{r5dDisp.text}</td>
+                          <td className={`px-3 py-2 text-right ${offDisp.tone}`}>{offDisp.text}</td>
+                        </tr>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
 
-      {visibleSectors.length === 0 ? (
-        <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
-          No sectors match your filter. Clear the search to see everything.
-        </div>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+      {sortKey !== "breadth" ? (
+        visibleSectors.length === 0 ? (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
+            No sectors match your filter. Clear the search to see everything.
+          </div>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {visibleSectors.map(({ sector, summary }) => {
             const hasTickers = sector.tickers.length > 0;
             const isAddingTicker = addingTickerFor === sector.id;
@@ -1366,8 +1682,9 @@ export default function SectorWatchlist(): React.ReactElement {
               </article>
             );
           })}
-        </div>
-      )}
+          </div>
+        )
+      ) : null}
     </section>
   );
 }

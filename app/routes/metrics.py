@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd  # type: ignore[import]
@@ -39,6 +41,8 @@ class MomentumDTO(BaseModel):
     r5d_pct: Optional[float]
     r1m_pct: Optional[float]
     r3m_pct: Optional[float]
+    # Additional optional momentum context
+    off_52w_high_pct: Optional[float] = None
 
 
 class RsiDTO(BaseModel):
@@ -174,23 +178,97 @@ async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provid
 
 @router.get("/momentum", response_model=MomentumDTO)
 async def momentum(symbol: str = Query(..., min_length=1), provider=Depends(_provider)):
-    ohlc = await provider.get_ohlc(symbol, period="12mo", interval="1d")
+    # Use unadjusted OHLC to match most charting/quote sources for 52W High
+    # and compute the 52W high from intraday High.
+    ohlc = await provider.get_ohlc(symbol, period="12mo", interval="1d", auto_adjust=False)
     s = _close_series_from_ohlc(ohlc)
+    # Build High series for intraday 52W high
+    hs = pd.Series(dtype=float)
+    if ohlc:
+        dfh = pd.DataFrame(ohlc)
+        if "Date" in dfh.columns:
+            dfh = dfh.set_index("Date")
+        if hasattr(dfh.index, "tz"):
+            try:
+                dfh.index = dfh.index.tz_localize(None)
+            except Exception:
+                pass
+        if "High" in dfh.columns:
+            hs = dfh["High"].astype(float).dropna().sort_index()
+
+    # Determine the last full trading day index in the series. If the last
+    # bar is for "today" but we are still prior to the US market close, treat
+    # it as incomplete and exclude it from momentum calculations.
+    def last_full_bar_index(series: pd.Series) -> int:
+        if series.empty:
+            return -1
+        end_idx = len(series) - 1
+        try:
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            last_ts = series.index[-1]
+            # Convert to a python datetime for robust date comparison
+            last_dt = (
+                last_ts.to_pydatetime() if hasattr(last_ts, "to_pydatetime") else last_ts
+            )
+            if getattr(last_dt, "date", None) and last_dt.date() == now_et.date():
+                # Consider the session complete only after the regular close
+                if now_et.time() < time(16, 5):  # 4:05pm ET buffer
+                    end_idx -= 1
+        except Exception:
+            # Best-effort only; if any issue, fall back to using the last bar
+            pass
+        return end_idx
 
     def pct(n: int) -> Optional[float]:
-        if len(s) <= n:
+        end_idx = last_full_bar_index(s)
+        if end_idx < 0 or (end_idx - n) < 0:
             return None
-        base = s.iloc[-1 - n]
-        if base == 0 or pd.isna(base):
+        base = s.iloc[end_idx - n]
+        last = s.iloc[end_idx]
+        if base == 0 or pd.isna(base) or pd.isna(last):
             return None
-        return float(s.iloc[-1] / base - 1)
+        return float(last / base - 1)
+
+    off_52w_high_pct: Optional[float] = None
+    if not s.empty:
+        last_close = float(s.iloc[-1])
+        # Use only highs up to the last full trading day to avoid including
+        # an incomplete current session. Then restrict to the last 252 bars.
+        try:
+            end_idx = last_full_bar_index(s)
+            end_dt = s.index[end_idx]
+            hs_upto = hs.loc[:end_dt]
+        except Exception:
+            hs_upto = hs
+        if not hs_upto.empty:
+            windowed = hs_upto.tail(252)
+            if not windowed.empty:
+                hi = float(windowed.max())
+                if hi and not pd.isna(hi) and hi != 0:
+                    off_52w_high_pct = float(last_close / hi - 1)
+
+    # Use the last full day as the as_of for momentum
+    last_idx = None if s.empty else last_full_bar_index(s)
+    as_of = (
+        s.index[last_idx].date().isoformat() if (last_idx is not None and last_idx >= 0) else None
+    )
 
     return MomentumDTO(
         symbol=symbol.upper(),
-        as_of=s.index[-1].date().isoformat() if not s.empty else None,
-        r5d_pct=pct(5),
+        as_of=as_of,
+        # For 5D, include exactly the last 5 completed sessions (t vs t-4)
+        r5d_pct=(
+            (lambda: (
+                (lambda end_idx: (
+                    None
+                    if end_idx < 0 or (end_idx - 4) < 0 or s.iloc[end_idx - 4] == 0
+                    else float(s.iloc[end_idx] / s.iloc[end_idx - 4] - 1)
+                ))(last_full_bar_index(s))
+            ))()
+        ),
         r1m_pct=pct(21),
         r3m_pct=pct(63),
+        off_52w_high_pct=off_52w_high_pct,
     )
 
 

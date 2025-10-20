@@ -6,6 +6,7 @@ uvicorn[standard]==0.24.0
 pandas==2.3.1
 numpy==2.0.2
 pyarrow>=16.1
+yfinance==0.2.44
 
 # Configuration
 PyYAML==6.0.2

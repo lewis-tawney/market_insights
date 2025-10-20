@@ -89,12 +89,10 @@ export default function TradingDashboard() {
                       ))}
                     </div>
 
-                    <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
-                      <IndexComparisonCard />
-                    </div>
+                    <IndexComparisonCard />
                   </div>
 
-                  <div className="xl:w-80 xl:flex-shrink-0">
+                  <div className="xl:w-80 xl:flex-shrink-0 flex flex-col">
                     <SectorEtfOverview />
                   </div>
                 </div>

@@ -9,7 +9,12 @@ class MarketData(Protocol):
         ...
 
     async def get_ohlc(
-        self, symbol: str, *, period: str = "6mo", interval: str = "1d"
+        self,
+        symbol: str,
+        *,
+        period: str = "6mo",
+        interval: str = "1d",
+        auto_adjust: bool = False,
     ) -> List[Dict[str, Any]]:
         ...
 
