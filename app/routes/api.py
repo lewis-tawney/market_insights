@@ -68,6 +68,45 @@ async def price(symbol: str, request: Request):
     return {"symbol": symbol.upper(), "price": p}
 
 
+@router.get("/debug/yf")
+async def debug_yf(symbol: str, period: str = "1mo", interval: str = "1d"):
+    """Direct yfinance check to diagnose empty responses.
+
+    Returns basic stats about fetched rows and date range without caching.
+    """
+    try:
+        from app.providers.yfinance import YFinanceProvider as _YFP  # lazy import
+
+        df = _YFP._download_history(symbol.strip().upper(), period, interval)
+        import yfinance as yf  # type: ignore
+
+        if df is None:
+            return {
+                "ok": False,
+                "reason": "no_dataframe",
+                "yfinance_version": getattr(yf, "__version__", "unknown"),
+            }
+        rows = int(getattr(df, "shape", (0,))[0] or 0)
+        first = None
+        last = None
+        try:
+            if rows > 0 and hasattr(df, "index") and len(df.index) > 0:
+                first = df.index[0].isoformat() if hasattr(df.index[0], "isoformat") else str(df.index[0])
+                last = df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1])
+        except Exception:
+            pass
+        return {
+            "ok": rows > 0,
+            "rows": rows,
+            "first": first,
+            "last": last,
+            "columns": list(getattr(df, "columns", [])),
+            "yfinance_version": getattr(yf, "__version__", "unknown"),
+        }
+    except Exception as e:  # pragma: no cover - debug only
+        return {"ok": False, "error": str(e)}
+
+
 @router.get("/compass")
 async def compass(request: Request):
     md = request.app.state.market

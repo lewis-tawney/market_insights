@@ -1,10 +1,13 @@
-"""Async YFinance provider implementation."""
+"""Async YFinance provider implementation with resilient fetch."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List, Optional
 
+import logging
+import requests
+import pandas as pd  # type: ignore[import]
 import yfinance as yf
 
 
@@ -13,8 +16,91 @@ class YFinanceProvider:
 
     @staticmethod
     def _history(symbol: str, period: str, interval: str):
-        ticker = yf.Ticker(symbol)
-        return ticker.history(period=period, interval=interval)
+        logger = logging.getLogger("market_insights.yfinance")
+        sess = requests.Session()
+        sess.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/119.0.0.0 Safari/537.36"
+                )
+            }
+        )
+        try:
+            ticker = yf.Ticker(symbol, session=sess)
+            df = ticker.history(
+                period=period,
+                interval=interval,
+                auto_adjust=False,
+                actions=False,
+                raise_errors=True,  # type: ignore[arg-type]
+            )
+        except Exception as e:
+            logger.warning("Ticker.history failed for %s: %s", symbol, e)
+            df = None
+
+        if df is None or getattr(df, "empty", True):
+            try:
+                df = yf.download(  # type: ignore[assignment]
+                    tickers=symbol,
+                    period=period,
+                    interval=interval,
+                    auto_adjust=False,
+                    actions=False,
+                    threads=False,
+                    progress=False,
+                    group_by="column",
+                    prepost=False,
+                    repair=True,
+                    session=sess,
+                    raise_errors=True,  # type: ignore[call-arg]
+                )
+            except Exception as e:
+                logger.error("yf.download failed for %s: %s", symbol, e)
+                df = None
+
+        if df is None or getattr(df, "empty", True):
+            import datetime as _dt
+            def _days_for(p: str) -> int:
+                mapping = {
+                    "5d": 7,
+                    "1mo": 45,
+                    "3mo": 120,
+                    "6mo": 220,
+                    "1y": 380,
+                    "2y": 760,
+                    "5y": 2000,
+                    "10y": 4000,
+                    "max": 10000,
+                }
+                return mapping.get(p, 380)
+            start = (_dt.datetime.utcnow() - _dt.timedelta(days=_days_for(period))).date()
+            try:
+                df = yf.download(  # type: ignore[assignment]
+                    tickers=symbol,
+                    start=str(start),
+                    interval=interval,
+                    auto_adjust=False,
+                    actions=False,
+                    threads=False,
+                    progress=False,
+                    group_by="column",
+                    prepost=False,
+                    repair=True,
+                    session=sess,
+                    raise_errors=True,  # type: ignore[call-arg]
+                )
+            except Exception as e:
+                logger.error("yf.download(start=…) failed for %s: %s", symbol, e)
+                return None
+
+        if hasattr(df, "columns") and isinstance(df.columns, pd.MultiIndex):
+            try:
+                df = df.droplevel(0, axis=1)
+            except Exception:
+                pass
+        return df
 
     @staticmethod
     def _fast_info(symbol: str) -> Dict[str, Any]:

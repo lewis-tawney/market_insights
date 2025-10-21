@@ -7,6 +7,9 @@ pandas==2.3.1
 numpy==2.0.2
 pyarrow>=16.1
 
+# Market data providers
+yfinance==0.2.43
+
 # Configuration
 PyYAML==6.0.2
 

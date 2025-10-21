@@ -206,7 +206,10 @@ async def rsi(symbol: str = Query(..., min_length=1), provider=Depends(_provider
     roll_up = up.ewm(alpha=1 / 14, adjust=False).mean()
     roll_down = down.ewm(alpha=1 / 14, adjust=False).mean()
     rs = roll_up / roll_down.replace(0, np.nan)
-    rsi_val = float(100 - (100 / (1 + rs.iloc[-1])))
+    last_rs = rs.iloc[-1]
+    if pd.isna(last_rs) or np.isinf(last_rs):
+        return RsiDTO(symbol=symbol.upper(), as_of=s.index[-1].date().isoformat(), rsi=None, state=None)
+    rsi_val = float(100 - (100 / (1 + last_rs)))
     state = "Neutral"
     if rsi_val > 70:
         state = "Overbought"
