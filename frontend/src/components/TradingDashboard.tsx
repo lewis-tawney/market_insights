@@ -13,7 +13,6 @@ const INDEX_COLOR_MAP: Record<string, string> = Object.fromEntries(
 
 export default function TradingDashboard() {
   const [symbol, setSymbol] = useState<string>("SPY");
-  const [refreshKey, setRefreshKey] = useState(0);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const debounceTimeoutRef = useRef<number | null>(null);
@@ -35,13 +34,11 @@ export default function TradingDashboard() {
 
     // Set new timeout to trigger refresh after user stops typing
     debounceTimeoutRef.current = setTimeout(() => {
-      setRefreshKey((k) => k + 1);
     }, 1000); // 1 second delay
   }, []);
 
   const handleRefresh = useCallback(() => {
     setLoading(true);
-    setRefreshKey((k) => k + 1);
     // Reset loading state after a short delay
     setTimeout(() => setLoading(false), 1000);
   }, []);

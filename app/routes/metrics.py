@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -8,6 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
+logger = logging.getLogger("market_insights.metrics")
 
 
 # ---------------- DTOs ----------------
@@ -59,6 +62,19 @@ class ReturnsDTO(BaseModel):
     YTD: Optional[float] = None
 
 
+class TrendLiteDTO(BaseModel):
+    symbol: str
+    as_of: Optional[str]
+    price: Optional[float]
+    prev_close: Optional[float]
+    pct_change: Optional[float]
+    error: Optional[str] = None
+    above10: Optional[bool] = None
+    above20: Optional[bool] = None
+    above50: Optional[bool] = None
+    above200: Optional[bool] = None
+
+
 # ---------------- helpers ----------------
 def _close_series_from_ohlc(records: List[Dict]) -> pd.Series:
     if not records:
@@ -97,6 +113,88 @@ def _slope_pct_per_day(x: pd.Series, n: int) -> Optional[float]:
 
 def _provider(request: Request):
     return request.app.state.market
+
+
+async def _compute_trend_lite(provider, symbol: str) -> TrendLiteDTO:
+    sym = symbol.strip().upper()
+    if not sym:
+        return TrendLiteDTO(
+            symbol=symbol,
+            as_of=None,
+            price=None,
+            prev_close=None,
+            pct_change=None,
+            error="invalid_symbol",
+        )
+    try:
+        ohlc = await provider.get_ohlc(sym, period="1y", interval="1d")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("trend-lite fetch failed for %s: %s", sym, exc)
+        return TrendLiteDTO(
+            symbol=sym,
+            as_of=None,
+            price=None,
+            prev_close=None,
+            pct_change=None,
+            error="fetch_failed",
+        )
+
+    series = _close_series_from_ohlc(ohlc)
+    if series.empty or len(series) < 1:
+        return TrendLiteDTO(
+            symbol=sym,
+            as_of=None,
+            price=None,
+            prev_close=None,
+            pct_change=None,
+            error="no_data",
+        )
+
+    price = float(series.iloc[-1])
+    prev_close = float(series.iloc[-2]) if len(series) >= 2 else None
+    pct_change: Optional[float] = None
+    if prev_close and prev_close != 0:
+        pct_change = (price / prev_close - 1.0) * 100.0
+
+    as_of_raw = series.index[-1]
+    if hasattr(as_of_raw, "date"):
+        as_of = as_of_raw.date().isoformat()
+    else:
+        as_of = str(as_of_raw)
+
+    def _last_sma(window: int) -> Optional[float]:
+        if len(series) < window:
+            return None
+        sm = _sma(series, window)
+        if sm.empty:
+            return None
+        value = sm.iloc[-1]
+        if np.isnan(value):
+            return None
+        return float(value)
+
+    sma10 = _last_sma(10)
+    sma20 = _last_sma(20)
+    sma50 = _last_sma(50)
+    sma200 = _last_sma(200)
+
+    def _above(sma_value: Optional[float]) -> Optional[bool]:
+        if sma_value is None:
+            return None
+        return bool(price > sma_value)
+
+    return TrendLiteDTO(
+        symbol=sym,
+        as_of=as_of,
+        price=price,
+        prev_close=prev_close,
+        pct_change=pct_change,
+        error=None,
+        above10=_above(sma10),
+        above20=_above(sma20),
+        above50=_above(sma50),
+        above200=_above(sma200),
+    )
 
 
 # ---------------- endpoints ----------------
@@ -170,6 +268,35 @@ async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provid
         ),
     )
     return dto
+
+
+@router.get("/trend/lite", response_model=List[TrendLiteDTO])
+async def trend_lite(
+    symbols: str = Query(..., min_length=1),
+    provider=Depends(_provider),
+):
+    raw = [s.strip().upper() for s in symbols.split(",")]
+    ordered: List[str] = []
+    seen = set()
+    for sym in raw:
+        if not sym:
+            continue
+        if sym in seen:
+            continue
+        seen.add(sym)
+        ordered.append(sym)
+
+    if not ordered:
+        return []
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def _limited(symbol: str) -> TrendLiteDTO:
+        async with semaphore:
+            return await _compute_trend_lite(provider, symbol)
+
+    results = await asyncio.gather(*(_limited(sym) for sym in ordered))
+    return results
 
 
 @router.get("/momentum", response_model=MomentumDTO)

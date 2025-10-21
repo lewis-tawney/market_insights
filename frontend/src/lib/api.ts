@@ -40,6 +40,19 @@ export interface TrendResponse {
   above200?: boolean | null;
 }
 
+export interface TrendLiteResponse {
+  symbol: string;
+  as_of: string | null;
+  price: number | null;
+  prev_close: number | null;
+  pct_change: number | null;
+  error?: string | null;
+  above10?: boolean | null;
+  above20?: boolean | null;
+  above50?: boolean | null;
+  above200?: boolean | null;
+}
+
 export interface VixResponse {
   as_of: string;
   value: number | null;
@@ -65,6 +78,46 @@ export async function fetchReturns(symbol: string, windows = "MTD,YTD") {
 
 export async function fetchVIX(): Promise<VixResponse> {
   return getJSON<VixResponse>(`/metrics/vix`);
+}
+
+const TREND_LITE_BATCH_SIZE = 40;
+
+function chunkSymbols(symbols: string[], size: number): string[][] {
+  const chunks: string[][] = [];
+  for (let i = 0; i < symbols.length; i += size) {
+    chunks.push(symbols.slice(i, i + size));
+  }
+  return chunks;
+}
+
+export async function fetchTrendLiteBulk(symbols: string[]): Promise<Record<string, TrendLiteResponse>> {
+  if (!symbols.length) {
+    return {};
+  }
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  symbols.forEach((sym) => {
+    const upper = sym.trim().toUpperCase();
+    if (!upper || seen.has(upper)) {
+      return;
+    }
+    seen.add(upper);
+    unique.push(upper);
+  });
+
+  const chunks = chunkSymbols(unique, TREND_LITE_BATCH_SIZE);
+  const responses = await Promise.all(
+    chunks.map((chunk) => {
+      const param = encodeURIComponent(chunk.join(","));
+      return getJSON<TrendLiteResponse[]>(`/metrics/trend/lite?symbols=${param}`);
+    })
+  );
+
+  const merged: Record<string, TrendLiteResponse> = {};
+  responses.flat().forEach((entry) => {
+    merged[entry.symbol] = entry;
+  });
+  return merged;
 }
 
 // Breadth endpoints removed - not needed

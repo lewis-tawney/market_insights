@@ -120,6 +120,18 @@ async def test_metrics_momentum(aclient: httpx.AsyncClient):
 
 
 @pytest.mark.anyio("asyncio")
+async def test_metrics_trend_lite(aclient: httpx.AsyncClient):
+    symbols = "SPY,QQQ,SPY"
+    r = await aclient.get("/metrics/trend/lite", params={"symbols": symbols})
+    assert r.status_code == 200
+    payload = r.json()
+    assert isinstance(payload, list)
+    assert len(payload) == 2  # duplicates stripped
+    symbols_returned = {entry["symbol"] for entry in payload}
+    assert {"SPY", "QQQ"} == symbols_returned
+
+
+@pytest.mark.anyio("asyncio")
 async def test_metrics_rsi(aclient: httpx.AsyncClient):
     r = await aclient.get("/metrics/rsi", params={"symbol": "IWM"})
     assert r.status_code == 200

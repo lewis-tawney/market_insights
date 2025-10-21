@@ -54,7 +54,6 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
 
   const formatSmaPercent = (value: number | null | undefined) => {
     if (value === null || value === undefined) return { text: "—", color: "text-gray-400" };
-    const absValue = Math.abs(value);
     const color = value >= 0 ? "text-green-400" : "text-red-400";
     return { text: `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`, color };
   };

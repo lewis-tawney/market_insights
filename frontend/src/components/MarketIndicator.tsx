@@ -26,26 +26,6 @@ async function getJSON<T>(path: string): Promise<T> {
 type Vix = VixResponse;
 type Rsi = { symbol: string; as_of: string; rsi: number; state: string };
 
-type BreadthData = {
-  date: string;
-  n_elig: number;
-  n_up4: number;
-  n_dn4: number;
-  up10: number;
-  dn10: number;
-  r5: number;
-  r10: number;
-  n_up25m: number;
-  n_dn25m: number;
-  n_up50m: number;
-  n_dn50m: number;
-  n_up25q: number;
-  n_dn25q: number;
-  n_up13x34: number;
-  n_dn13x34: number;
-  d34_13: number;
-};
-
 export function VixCard(): React.ReactElement {
   const [data, setData] = useState<Vix | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -25,20 +25,14 @@ export const INDEX_SERIES: SymbolConfig[] = [
   { symbol: "IWM", color: "#ff8c42" },
 ];
 
-const PST_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/Los_Angeles",
-  hour: "numeric",
-  minute: "2-digit",
-  hour12: true,
-});
-
 const PST_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Los_Angeles",
   month: "short",
   day: "numeric",
 });
 
-const SESSION_PADDING_SECONDS = 5 * 60; // pad edges so 6:30 AM label isn't clipped
+const DAILY_PERIOD = "6mo";
+const DAILY_INTERVAL = "1d";
 
 function timeToDate(time: Time): Date {
   if (typeof time === "number") {
@@ -52,51 +46,31 @@ function timeToDate(time: Time): Date {
 
 function formatTimeToPst(time: Time): string {
   const date = timeToDate(time);
-  if (typeof time === "number") {
-    return PST_TIME_FORMATTER.format(date);
-  }
   return PST_DATE_FORMATTER.format(date);
 }
 
 const pstTickFormatter = (time: Time) => formatTimeToPst(time);
 
-function getDateKey(iso: string): string {
-  const date = new Date(iso);
-  return date.toISOString().slice(0, 10);
-}
+function normalizeDailySeries(points: StockPoint[]): LineData[] {
+  const ordered = points
+    .filter((point) => point && typeof point.close === "number" && point.time)
+    .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 
-function extractSession(points: StockPoint[]): { session: StockPoint[]; baseline: number | null } {
-  if (!points.length) {
-    return { session: [], baseline: null };
-  }
-
-  const sorted = [...points].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
-  const dates = sorted.map((p) => getDateKey(p.time));
-  const lastDate = dates[dates.length - 1];
-
-  const session = sorted.filter((p) => getDateKey(p.time) === lastDate);
-  const priorPoints = sorted.filter((p) => getDateKey(p.time) < lastDate);
-
-  const baseline = priorPoints.length
-    ? priorPoints[priorPoints.length - 1].close
-    : session.length
-      ? session[0].close
-      : null;
-
-  return { session, baseline };
-}
-
-function normalizeSeries(points: StockPoint[], baseline: number | null): LineData[] {
-  if (!points.length || !baseline || baseline === 0) {
+  if (!ordered.length) {
     return [];
   }
 
-  return points.map((point) => {
+  const baseline = ordered[0].close;
+  if (!baseline || baseline === 0) {
+    return [];
+  }
+
+  return ordered.map((point) => {
     const timestamp = Math.floor(new Date(point.time).getTime() / 1000) as UTCTimestamp;
     const percentChange = ((point.close - baseline) / baseline) * 100;
     return {
       time: timestamp,
-      value: Number(percentChange.toFixed(4)),
+      value: Number(percentChange.toFixed(2)),
     };
   });
 }
@@ -104,7 +78,7 @@ function normalizeSeries(points: StockPoint[], baseline: number | null): LineDat
 async function fetchSeries(symbol: string, signal: AbortSignal): Promise<LineData[]> {
   try {
     const base = (API_BASE || "/api").replace(/\/$/, "");
-    const url = `${base}/stock/${encodeURIComponent(symbol)}?period=2d&interval=5m`;
+    const url = `${base}/stock/${encodeURIComponent(symbol)}?period=${DAILY_PERIOD}&interval=${DAILY_INTERVAL}`;
     const response = await fetch(url, { signal });
 
     if (!response.ok) {
@@ -112,11 +86,7 @@ async function fetchSeries(symbol: string, signal: AbortSignal): Promise<LineDat
     }
 
     const payload = (await response.json()) as StockPoint[];
-    const filtered = payload.filter((item) => item && typeof item.close === "number" && item.time);
-
-    const { session, baseline } = extractSession(filtered);
-
-    return normalizeSeries(session, baseline);
+    return normalizeDailySeries(payload);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       return [];
@@ -227,8 +197,7 @@ export function IndexComparisonCard() {
         return;
       }
 
-      let earliestTime: number | null = null;
-      let latestTime: number | null = null;
+      let hasData = false;
 
       results.forEach(({ symbol, data }) => {
         const series = seriesRefs.current[symbol];
@@ -236,28 +205,13 @@ export function IndexComparisonCard() {
           return;
         }
         series.setData(data);
-
-        if (data.length === 0) {
-          return;
+        if (data.length > 0) {
+          hasData = true;
         }
-
-        data.forEach(({ time }) => {
-          if (typeof time !== "number") {
-            return;
-          }
-          earliestTime = earliestTime === null ? time : Math.min(earliestTime, time);
-          latestTime = latestTime === null ? time : Math.max(latestTime, time);
-        });
       });
 
-      if (earliestTime !== null && latestTime !== null && chartRef.current) {
-        const timeScale = chartRef.current.timeScale();
-        const paddedFrom = Math.max(0, earliestTime - SESSION_PADDING_SECONDS) as UTCTimestamp;
-        const paddedTo = (latestTime + SESSION_PADDING_SECONDS) as UTCTimestamp;
-        timeScale.setVisibleRange({
-          from: paddedFrom,
-          to: paddedTo,
-        });
+      if (hasData && chartRef.current) {
+        chartRef.current.timeScale().fitContent();
       }
     }
 
@@ -285,7 +239,7 @@ export function IndexComparisonCard() {
         </div>
       </div>
       <p className="text-sm text-gray-400 mb-4">
-        Five-minute performance for the latest full trading day vs previous close.
+        Daily performance over the past six months, normalised to each series&apos; starting value.
       </p>
       <div ref={containerRef} className="w-full" />
     </div>

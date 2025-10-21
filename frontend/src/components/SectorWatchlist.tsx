@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { TrendResponse } from "../lib/api";
-import { fetchTrend } from "../lib/api";
+import type { TrendLiteResponse } from "../lib/api";
+import { fetchTrendLiteBulk } from "../lib/api";
 
 type Sector = {
   id: string;
@@ -11,15 +11,15 @@ type Sector = {
 type TickerState = {
   loading: boolean;
   error: string | null;
-  data: TrendResponse | null;
+  data: TrendLiteResponse | null;
 };
 
 const STORAGE_KEY = "market-insights:sector-watchlist";
 const TREND_CACHE_KEY = "market-insights:sector-trend-cache";
-const TREND_CACHE_VERSION = 1;
+const TREND_CACHE_VERSION = 2;
 
 type TrendCacheEntry = {
-  data: TrendResponse;
+  data: TrendLiteResponse;
   savedAt: string;
 };
 
@@ -362,11 +362,11 @@ function loadTrendCache(expectedDate: string): TrendCache {
           continue;
         }
         const data = (entry as TrendCacheEntry).data;
-        if (!data || typeof data !== "object" || typeof (data as TrendResponse).symbol !== "string") {
+        if (!data || typeof data !== "object" || typeof (data as TrendLiteResponse).symbol !== "string") {
           continue;
         }
         entries[ticker] = {
-          data: data as TrendResponse,
+          data: data as TrendLiteResponse,
           savedAt:
             typeof (entry as TrendCacheEntry).savedAt === "string"
               ? (entry as TrendCacheEntry).savedAt
@@ -423,8 +423,14 @@ function formatAsOf(value: string | null | undefined): string {
   });
 }
 
-function computeChange(data: TrendResponse | null | undefined): number | null {
-  if (!data || data.price == null || data.prev_close == null || data.prev_close === 0) {
+function computeChange(data: TrendLiteResponse | null | undefined): number | null {
+  if (!data) {
+    return null;
+  }
+  if (typeof data.pct_change === "number" && !Number.isNaN(data.pct_change)) {
+    return data.pct_change;
+  }
+  if (data.price == null || data.prev_close == null || data.prev_close === 0) {
     return null;
   }
   return ((data.price - data.prev_close) / data.prev_close) * 100;
@@ -558,7 +564,7 @@ const TREND_SIGNAL_META: Array<{ key: TrendSignalKey; label: string }> = [
   { key: "above200", label: "Above 200-day SMA" },
 ];
 
-function TrendSignals({ data }: { data: TrendResponse | null | undefined }) {
+function TrendSignals({ data }: { data: TrendLiteResponse | null | undefined }) {
   return (
     <div className="flex items-center gap-1" aria-label="Trend moving-average alignment">
       {TREND_SIGNAL_META.map(({ key, label }) => {
@@ -718,45 +724,66 @@ export default function SectorWatchlist(): React.ReactElement {
     let alive = true;
 
     (async () => {
-      const results = await Promise.all(
-        tickersToFetch.map(async (ticker) => {
-          try {
-            const data = await fetchTrend(ticker);
-            return { ticker, data, error: null as string | null };
-          } catch (err: any) {
-            const message = err?.message ?? "Failed to load";
-            return { ticker, data: null, error: message };
-          }
-        })
-      );
+      try {
+        const fetchedMap = await fetchTrendLiteBulk(tickersToFetch);
 
-      if (!alive) {
-        return;
-      }
-
-      setTickerStates((prev) => {
-        const updated: Record<string, TickerState> = { ...prev };
-        results.forEach(({ ticker, data, error }) => {
-          const previous = prev[ticker];
-          const nextData = data ?? previous?.data ?? null;
-          updated[ticker] = { data: nextData, error, loading: false };
-        });
-        return updated;
-      });
-
-      const entries = { ...cache.entries };
-      let mutated = false;
-      const savedAt = new Date().toISOString();
-      results.forEach(({ ticker, data }) => {
-        if (data) {
-          entries[ticker] = { data, savedAt };
-          mutated = true;
+        if (!alive) {
+          return;
         }
-      });
 
-      if (mutated) {
-        cache = { version: TREND_CACHE_VERSION, date: todayKey, entries };
-        saveTrendCache(cache);
+        setTickerStates((prev) => {
+          const updated: Record<string, TickerState> = { ...prev };
+          tickersToFetch.forEach((ticker) => {
+            const payload = fetchedMap[ticker];
+            if (payload) {
+              updated[ticker] = {
+                data: payload,
+                error: payload.error ?? null,
+                loading: false,
+              };
+            } else {
+              const previous = prev[ticker];
+              updated[ticker] = {
+                data: previous?.data ?? null,
+                error: "No data returned",
+                loading: false,
+              };
+            }
+          });
+          return updated;
+        });
+
+        const entries = { ...cache.entries };
+        let mutated = false;
+        const savedAt = new Date().toISOString();
+        Object.entries(fetchedMap).forEach(([ticker, payload]) => {
+          if (payload && !payload.error && payload.price != null) {
+            entries[ticker] = { data: payload, savedAt };
+            mutated = true;
+          }
+        });
+
+        if (mutated) {
+          cache = { version: TREND_CACHE_VERSION, date: todayKey, entries };
+          saveTrendCache(cache);
+        }
+      } catch (err: any) {
+        if (!alive) {
+          return;
+        }
+        const message = err?.message ?? "Failed to load";
+        setTickerStates((prev) => {
+          const updated: Record<string, TickerState> = { ...prev };
+          tickersToFetch.forEach((ticker) => {
+            const previous = prev[ticker];
+            updated[ticker] = {
+              data: previous?.data ?? null,
+              error: message,
+              loading: false,
+            };
+          });
+          return updated;
+        });
       }
     })();
 
