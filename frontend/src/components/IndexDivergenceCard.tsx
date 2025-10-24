@@ -25,6 +25,8 @@ export const INDEX_SERIES: SymbolConfig[] = [
   { symbol: "IWM", color: "#ff8c42" },
 ];
 
+const CHART_HEIGHT = 255;
+
 const PST_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Los_Angeles",
   month: "short",
@@ -96,7 +98,7 @@ async function fetchSeries(symbol: string, signal: AbortSignal): Promise<LineDat
   }
 }
 
-export function IndexComparisonCard() {
+export function IndexDivergenceCard() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRefs = useRef<Record<string, ISeriesApi<"Line">>>({});
@@ -108,7 +110,7 @@ export function IndexComparisonCard() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: 240,
+      height: containerRef.current.clientHeight || CHART_HEIGHT,
       layout: {
         background: { color: "#1f2937" },
         textColor: "#f3f4f6",
@@ -223,8 +225,8 @@ export function IndexComparisonCard() {
   }, []);
 
   return (
-    <div className="bg-gray-800 rounded shadow p-4">
-      <div className="flex items-center justify-between mb-3">
+    <div className="rounded bg-gray-800 p-4 shadow">
+      <div className="mb-3 flex items-center justify-between">
         <h2 className="text-xl font-bold text-gray-100">Index Divergence</h2>
         <div className="flex gap-3 text-sm text-gray-400">
           {INDEX_SERIES.map(({ symbol, color }) => (
@@ -238,10 +240,10 @@ export function IndexComparisonCard() {
           ))}
         </div>
       </div>
-      <p className="text-sm text-gray-400 mb-4">
+      <p className="mb-4 text-sm text-gray-400">
         Daily performance over the past six months, normalised to each series&apos; starting value.
       </p>
-      <div ref={containerRef} className="w-full" />
+      <div ref={containerRef} className="w-full" style={{ height: CHART_HEIGHT }} />
     </div>
   );
 }

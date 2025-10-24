@@ -8,15 +8,119 @@ function join(base: string, path: string): string {
   return `${b}${p}`;
 }
 
-export async function getJSON<T>(path: string): Promise<T> {
-  const url = join(BASE, path);
-  const res = await fetch(url);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
+const CACHE_TTL_MS = 60 * 60 * 1000; // one hour
+const CACHE_PREFIX = "market-insights:api-cache:";
+
+type CacheEntry = {
+  expiresAt: number;
+  data: unknown;
+};
+
+const memoryCache = new Map<string, CacheEntry>();
+const inflightRequests = new Map<string, Promise<unknown>>();
+
+function getCacheKey(base: string, path: string): string {
+  return `${CACHE_PREFIX}${base}::${path}`;
+}
+
+function getStorage(): Storage | null {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) {
+      return null;
+    }
+    return window.localStorage;
+  } catch {
+    return null;
   }
-  const data = (await res.json()) as T;
-  return data;
+}
+
+function readCache<T>(key: string): T | undefined {
+  const now = Date.now();
+  const entry = memoryCache.get(key);
+  if (entry) {
+    if (entry.expiresAt > now) {
+      return entry.data as T;
+    }
+    memoryCache.delete(key);
+  }
+
+  const storage = getStorage();
+  if (!storage) {
+    return undefined;
+  }
+
+  const raw = storage.getItem(key);
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as CacheEntry;
+    if (parsed.expiresAt > now) {
+      memoryCache.set(key, parsed);
+      return parsed.data as T;
+    }
+    storage.removeItem(key);
+  } catch {
+    storage.removeItem(key);
+  }
+  return undefined;
+}
+
+function writeCache<T>(key: string, data: T): void {
+  const entry: CacheEntry = { data, expiresAt: Date.now() + CACHE_TTL_MS };
+  memoryCache.set(key, entry);
+
+  const storage = getStorage();
+  if (!storage) {
+    return;
+  }
+
+  try {
+    storage.setItem(key, JSON.stringify(entry));
+  } catch {
+    storage.removeItem(key);
+  }
+}
+
+function requestWithInflight<T>(key: string, factory: () => Promise<T>): Promise<T> {
+  const existing = inflightRequests.get(key);
+  if (existing) {
+    return existing as Promise<T>;
+  }
+
+  const promise = factory()
+    .then((result) => {
+      inflightRequests.delete(key);
+      return result;
+    })
+    .catch((error) => {
+      inflightRequests.delete(key);
+      throw error;
+    });
+
+  inflightRequests.set(key, promise);
+  return promise;
+}
+
+export async function getJSON<T>(path: string): Promise<T> {
+  const cacheKey = getCacheKey(BASE, path);
+  const cached = readCache<T>(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  return requestWithInflight(cacheKey, async () => {
+    const url = join(BASE, path);
+    const res = await fetch(url);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
+    }
+    const data = (await res.json()) as T;
+    writeCache(cacheKey, data);
+    return data;
+  });
 }
 
 export interface TrendResponse {
@@ -59,6 +163,14 @@ export interface VixResponse {
   avg7: number | null;
 }
 
+export interface MomentumResponse {
+  symbol: string;
+  as_of: string | null;
+  r5d_pct: number | null;
+  r1m_pct: number | null;
+  r3m_pct: number | null;
+}
+
 // Metrics endpoints
 export async function fetchTrend(symbol: string): Promise<TrendResponse> {
   return getJSON<TrendResponse>(`/metrics/trend?symbol=${encodeURIComponent(symbol)}`);
@@ -69,7 +181,7 @@ export async function fetchRSI(symbol: string) {
 }
 
 export async function fetchMomentum(symbol: string) {
-  return getJSON(`/metrics/momentum?symbol=${encodeURIComponent(symbol)}`);
+  return getJSON<MomentumResponse>(`/metrics/momentum?symbol=${encodeURIComponent(symbol)}`);
 }
 
 export async function fetchReturns(symbol: string, windows = "MTD,YTD") {
