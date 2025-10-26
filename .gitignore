@@ -36,6 +36,10 @@ config.yaml
 .cache/
 cache/
 
+# Snapshot outputs
+data/*.duckdb
+snapshots/*.json
+
 # Jupyter Notebooks
 .ipynb_checkpoints/
 

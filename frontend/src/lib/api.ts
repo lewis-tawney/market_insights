@@ -163,6 +163,15 @@ export interface VixResponse {
   avg7: number | null;
 }
 
+export interface OhlcPoint {
+  time: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+}
+
 export interface MomentumResponse {
   symbol: string;
   as_of: string | null;
@@ -190,6 +199,61 @@ export async function fetchReturns(symbol: string, windows = "MTD,YTD") {
 
 export async function fetchVIX(): Promise<VixResponse> {
   return getJSON<VixResponse>(`/metrics/vix`);
+}
+
+export async function fetchOhlcSeries(
+  symbol: string,
+  options: { period?: string; interval?: string } = {}
+): Promise<OhlcPoint[]> {
+  const period = options.period ?? "1mo";
+  const interval = options.interval ?? "1d";
+  const encodedSymbol = encodeURIComponent(symbol);
+  const query = `period=${encodeURIComponent(period)}&interval=${encodeURIComponent(interval)}`;
+  return getJSON<OhlcPoint[]>(`/stock/${encodedSymbol}?${query}`);
+}
+
+// -------- Sector volume aggregator (server-side) --------
+export interface SectorIn {
+  id: string;
+  name: string;
+  tickers: string[];
+}
+
+export interface TickerLeaderDTO {
+  ticker: string;
+  relVol10: number | null;
+  change1d: number | null;
+}
+
+export interface SectorVolumeDTO {
+  id: string;
+  name: string;
+  members: string[];
+  relVol10_median: number | null;
+  dollarVol_today_sum: number | null;
+  avgDollarVol10_sum: number | null;
+  change1d_median: number | null;
+  leaders: TickerLeaderDTO[];
+  spark10: number[];
+  lastUpdated: string | null;
+}
+
+async function postJSON<T>(path: string, body: unknown): Promise<T> {
+  const url = join(BASE, path);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
+  }
+  return (await res.json()) as T;
+}
+
+export async function fetchSectorVolumeAggregate(sectors: SectorIn[]): Promise<SectorVolumeDTO[]> {
+  return postJSON<SectorVolumeDTO[]>(`/metrics/sectors/volume`, { sectors });
 }
 
 const TREND_LITE_BATCH_SIZE = 40;

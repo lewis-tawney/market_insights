@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CandlestickData,
+  CandlestickSeries,
   IChartApi,
   ISeriesApi,
   UTCTimestamp,
@@ -48,7 +49,7 @@ export function ChartComponent({ symbol, period = "1mo" }: ChartComponentProps) 
       timeScale: { borderColor: "#e5e7eb" },
     });
 
-    const series = chart.addCandlestickSeries({
+    const series = chart.addSeries(CandlestickSeries, {
       upColor: "#26a69a",
       downColor: "#ef5350",
       borderUpColor: "#26a69a",

@@ -230,6 +230,15 @@ For questions or issues:
 - Check the API documentation at `http://localhost:8000/docs` when running
 - Review the configuration options in `config.example.yaml`
 
+### Sector Volume Snapshot (EOD)
+- Run the daily snapshot job after the market close to refresh cached sector volume metrics:
+  ```bash
+  python -m server.jobs.eod_snapshot
+  ```
+- Snapshots are persisted in DuckDB (`data/market.duckdb`) and mirrored under `snapshots/` as dated JSON plus `sectors_volume_latest.json`.
+- Alerts/logs: `logs/eod_snapshot.log` records each run; `logs/eod_snapshot_alerts.log` is appended when the job fails or the latest snapshot is older than 24 hours.
+- The `/metrics/sectors/volume` endpoint now serves the most recent snapshot only; if the job fails, the previous snapshot remains in use until the job succeeds.
+
 ## 🔮 Roadmap
 
 - [ ] WebSocket support for real-time updates

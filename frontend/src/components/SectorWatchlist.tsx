@@ -1,6 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { TrendLiteResponse } from "../lib/api";
-import { fetchTrendLiteBulk } from "../lib/api";
+import type { TrendLiteResponse, OhlcPoint, SectorIn, SectorVolumeDTO } from "../lib/api";
+import { fetchTrendLiteBulk, fetchOhlcSeries, fetchSectorVolumeAggregate } from "../lib/api";
+import { isFeatureEnabled } from "../lib/features";
+import {
+  buildSectorLeaderboard,
+  sortLeaderboardRows,
+  type LeaderboardRow,
+  type LeaderboardSortKey,
+  formatCompactNumber,
+} from "../lib/sectorLeaderboard";
 
 type Sector = {
   id: string;
@@ -12,6 +20,12 @@ type TickerState = {
   loading: boolean;
   error: string | null;
   data: TrendLiteResponse | null;
+};
+
+type TickerSeriesState = {
+  loading: boolean;
+  error: string | null;
+  data: OhlcPoint[] | null;
 };
 
 const STORAGE_KEY = "market-insights:sector-watchlist";
@@ -407,6 +421,13 @@ function formatPercent(delta: number | null, digits = 2): { text: string; tone: 
   return { text: `${prefix}${delta.toFixed(digits)}%`, tone };
 }
 
+function formatRelativeVolume(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  return `${value.toFixed(2)}×`;
+}
+
 function formatAsOf(value: string | null | undefined): string {
   if (!value) {
     return "—";
@@ -581,9 +602,67 @@ function TrendSignals({ data }: { data: TrendLiteResponse | null | undefined }) 
   );
 }
 
+function Sparkline({ values }: { values: number[] }) {
+  if (!values.length) {
+    return <div className="h-8 w-24 rounded bg-gray-800/60" />;
+  }
+
+  const width = 100;
+  const height = 40;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+
+  const coordinates =
+    values.length === 1
+      ? `0,${height / 2} ${width},${height / 2}`
+      : values
+          .map((value, index) => {
+            const x = (index / (values.length - 1)) * width;
+            const y = height - ((value - min) / range) * height;
+            return `${x.toFixed(2)},${y.toFixed(2)}`;
+          })
+          .join(" ");
+
+  const zeroLine =
+    min <= 0 && max >= 0
+      ? height - ((0 - min) / range) * height
+      : null;
+
+  const first = values[0];
+  const last = values[values.length - 1];
+  const stroke = last >= first ? "#34d399" : "#f87171";
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-8 w-24">
+      {zeroLine !== null ? (
+        <line
+          x1="0"
+          y1={zeroLine}
+          x2={width}
+          y2={zeroLine}
+          stroke="#4b5563"
+          strokeWidth="0.75"
+          strokeDasharray="3 3"
+          opacity={0.6}
+        />
+      ) : null}
+      <polyline
+        fill="none"
+        stroke={stroke}
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={coordinates}
+      />
+    </svg>
+  );
+}
+
 export default function SectorWatchlist(): React.ReactElement {
   const [sectors, setSectors] = useState<Sector[]>(() => loadInitialSectors());
   const [tickerStates, setTickerStates] = useState<Record<string, TickerState>>({});
+  const [seriesStates, setSeriesStates] = useState<Record<string, TickerSeriesState>>({});
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [inputErrors, setInputErrors] = useState<Record<string, string | null>>({});
   const [refreshKey, setRefreshKey] = useState(0);
@@ -592,9 +671,13 @@ export default function SectorWatchlist(): React.ReactElement {
   const [editingSectorId, setEditingSectorId] = useState<string | null>(null);
   const [renameErrors, setRenameErrors] = useState<Record<string, string | null>>({});
   const lastRefreshKeyRef = useRef<number>(0);
+  const lastSeriesRefreshKeyRef = useRef<number>(0);
   const [filterTerm, setFilterTerm] = useState("");
   const [sortKey, setSortKey] = useState<"performance" | "breadth" | "name">("performance");
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(() => new Set());
+  const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSortKey>("relVol10");
+  const showVolumeLeaderboard = isFeatureEnabled("SECTORS_VOLUME_V1") || import.meta.env.DEV;
+  const enableClientAdapter = false;
   const sortOptions: Array<{ key: "performance" | "breadth" | "name"; label: string }> = [
     { key: "performance", label: "Performance" },
     { key: "breadth", label: "Breadth" },
@@ -681,6 +764,151 @@ export default function SectorWatchlist(): React.ReactElement {
 
     return sorted;
   }, [sectors, sectorSummaryMap, filterTerm, sortKey]);
+
+  const tickerTrendMap = useMemo(() => {
+    const map: Record<string, { change: number | null }> = {};
+    Object.entries(tickerStates).forEach(([ticker, state]) => {
+      map[ticker] = { change: computeChange(state.data) };
+    });
+    return map;
+  }, [tickerStates]);
+
+  const tickerSeriesMap = useMemo(() => {
+    const map: Record<string, OhlcPoint[] | null> = {};
+    Object.entries(seriesStates).forEach(([ticker, state]) => {
+      map[ticker] = state?.data ?? null;
+    });
+    return map;
+  }, [seriesStates]);
+
+  const [serverRows, setServerRows] = useState<LeaderboardRow[]>([]);
+  const [serverLoading, setServerLoading] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!showVolumeLeaderboard) {
+      return;
+    }
+    const payload: SectorIn[] = sectors.map((sector) => ({
+      id: sector.id,
+      name: sector.name,
+      tickers: sector.tickers,
+    }));
+    if (!payload.length) {
+      setServerRows([]);
+      setServerError(null);
+      return;
+    }
+
+    let alive = true;
+    setServerLoading(true);
+    setServerError(null);
+
+    (async () => {
+      try {
+        const response: SectorVolumeDTO[] = await fetchSectorVolumeAggregate(payload);
+        if (!alive) {
+          return;
+        }
+        const mapped: LeaderboardRow[] = response.map((sector) => {
+          const volume = sector.dollarVol_today_sum ?? null;
+          const avg10 = sector.avgDollarVol10_sum ?? null;
+          const volumeMomentum = volume !== null && avg10 !== null && avg10 !== 0
+            ? (volume - avg10) / avg10
+            : null;
+          return {
+            id: sector.id,
+            name: sector.name,
+            tickers: sector.members,
+            metrics: {
+              oneDayChange: sector.change1d_median ?? null,
+              sparkline: Array.isArray(sector.spark10) ? sector.spark10 : [],
+              relVol10: sector.relVol10_median ?? null,
+              volume,
+              avgVolume10: avg10,
+              volumeMomentum,
+              leaders: (sector.leaders ?? []).map((leader) => ({
+                ticker: leader.ticker,
+                change: leader.change1d ?? null,
+              })),
+            },
+          };
+        });
+        setServerRows(mapped);
+      } catch (error: any) {
+        if (!alive) {
+          return;
+        }
+        const message = typeof error?.message === "string" && error.message.trim()
+          ? error.message
+          : "Failed to load sector aggregates";
+        setServerRows([]);
+        setServerError(message);
+      } finally {
+        if (alive) {
+          setServerLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [showVolumeLeaderboard, sectors, refreshKey]);
+
+  const leaderboardRows = useMemo<LeaderboardRow[]>(() => {
+    if (!showVolumeLeaderboard) {
+      return [];
+    }
+    if (serverRows.length) {
+      return serverRows;
+    }
+    if (enableClientAdapter) {
+      return buildSectorLeaderboard({
+        sectors,
+        trendMap: tickerTrendMap,
+        seriesMap: tickerSeriesMap,
+      });
+    }
+    return [];
+  }, [showVolumeLeaderboard, serverRows, enableClientAdapter, sectors, tickerTrendMap, tickerSeriesMap]);
+
+  const filteredLeaderboardRows = useMemo<LeaderboardRow[]>(() => {
+    if (!showVolumeLeaderboard) {
+      return [];
+    }
+    const term = filterTerm.trim().toLowerCase();
+    if (!term) {
+      return leaderboardRows;
+    }
+    return leaderboardRows.filter((row) => {
+      if (row.name.toLowerCase().includes(term)) {
+        return true;
+      }
+      return row.tickers.some((ticker) => ticker.toLowerCase().includes(term));
+    });
+  }, [showVolumeLeaderboard, leaderboardRows, filterTerm]);
+
+  const sortedLeaderboardRows = useMemo<LeaderboardRow[]>(() => {
+    if (!showVolumeLeaderboard) {
+      return [];
+    }
+    return sortLeaderboardRows(filteredLeaderboardRows, leaderboardSort);
+  }, [showVolumeLeaderboard, filteredLeaderboardRows, leaderboardSort]);
+
+  const leaderboardSortOptions: Array<{ key: LeaderboardSortKey; label: string; description: string }> = [
+    { key: "relVol10", label: "RelVol10", description: "Relative volume (10 days)" },
+    { key: "oneDayChange", label: "1D%", description: "Average 1-day percent change" },
+    {
+      key: "volumeMomentum",
+      label: "Vol Momentum",
+      description: "(Vol - AvgVol10) / AvgVol10",
+    },
+  ];
+
+  const trackedTickerCount = useMemo(() => {
+    return sectors.reduce((acc, sector) => acc + sector.tickers.length, 0);
+  }, [sectors]);
 
   useEffect(() => {
     const refreshRequested = refreshKey !== lastRefreshKeyRef.current;
@@ -791,6 +1019,91 @@ export default function SectorWatchlist(): React.ReactElement {
       alive = false;
     };
   }, [allTickers, refreshKey]);
+
+  useEffect(() => {
+    if (!showVolumeLeaderboard) {
+      return;
+    }
+
+    if (!allTickers.length) {
+      setSeriesStates({});
+      return;
+    }
+
+    const refreshRequested = refreshKey !== lastSeriesRefreshKeyRef.current;
+    lastSeriesRefreshKeyRef.current = refreshKey;
+
+    const tickersToFetch: string[] = [];
+
+    setSeriesStates((prev) => {
+      const next: Record<string, TickerSeriesState> = {};
+      allTickers.forEach((ticker) => {
+        const existing = prev[ticker];
+        if (existing?.data && !refreshRequested) {
+          next[ticker] = existing;
+          return;
+        }
+        tickersToFetch.push(ticker);
+        next[ticker] = {
+          data: existing?.data ?? null,
+          error: null,
+          loading: true,
+        };
+      });
+      return next;
+    });
+
+    if (!tickersToFetch.length) {
+      return;
+    }
+
+    const BATCH_SIZE = 6;
+    const chunks: string[][] = [];
+    for (let i = 0; i < tickersToFetch.length; i += BATCH_SIZE) {
+      chunks.push(tickersToFetch.slice(i, i + BATCH_SIZE));
+    }
+
+    let alive = true;
+
+    (async () => {
+      for (const chunk of chunks) {
+        const results = await Promise.all(
+          chunk.map(async (ticker) => {
+            try {
+              const data = await fetchOhlcSeries(ticker, { period: "2mo", interval: "1d" });
+              return { ticker, data, error: null as string | null };
+            } catch (error: any) {
+              const message =
+                typeof error?.message === "string" && error.message.trim()
+                  ? error.message
+                  : "Failed to load";
+              return { ticker, data: null, error: message };
+            }
+          })
+        );
+
+        if (!alive) {
+          return;
+        }
+
+        setSeriesStates((prev) => {
+          const updated: Record<string, TickerSeriesState> = { ...prev };
+          results.forEach(({ ticker, data, error }) => {
+            updated[ticker] = {
+              data,
+              error,
+              loading: false,
+            };
+          });
+          return updated;
+        });
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [allTickers, refreshKey, showVolumeLeaderboard]);
 
   const handleAddTicker = (sectorId: string): boolean => {
     const raw = inputValues[sectorId] ?? "";
@@ -977,6 +1290,224 @@ export default function SectorWatchlist(): React.ReactElement {
     );
     setEditingSectorId(null);
   };
+
+  if (showVolumeLeaderboard) {
+    return (
+      <section className="mx-auto max-w-6xl space-y-5 text-gray-100">
+        <div className="rounded-xl border border-gray-700 bg-gray-800/80 p-4 space-y-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h3 className="text-base font-semibold text-gray-100">Sector Volume Leaderboard</h3>
+              <p className="text-xs text-gray-400">
+                Tracking {sectors.length} sectors &bull; {trackedTickerCount} tickers.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+              <input
+                type="search"
+                value={filterTerm}
+                onChange={(event) => setFilterTerm(event.target.value)}
+                placeholder="Filter sectors or tickers"
+                className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400 sm:w-56"
+              />
+              <div className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-900/60 p-1">
+                {leaderboardSortOptions.map((option) => {
+                  const active = leaderboardSort === option.key;
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setLeaderboardSort(option.key)}
+                      aria-pressed={active}
+                      title={option.description}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                        active
+                          ? "bg-emerald-500/20 text-emerald-300"
+                          : "text-gray-300 hover:text-gray-100"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={handleRefresh}
+                className="inline-flex items-center justify-center rounded-md border border-gray-700 px-3 py-2 text-sm font-medium text-gray-200 transition hover:border-gray-600 hover:text-white"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {serverError ? (
+          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+            {serverError}
+          </div>
+        ) : serverLoading ? (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
+            Loading sector volume data…
+          </div>
+        ) : sortedLeaderboardRows.length === 0 ? (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
+            No sectors match your filter. Clear the search to see everything.
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-gray-800">
+            <table className="min-w-full divide-y divide-gray-800">
+              <thead className="bg-gray-900/80 text-xs uppercase tracking-wide text-gray-400">
+                <tr>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">
+                    Sector
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-right font-semibold">
+                    1D%
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">
+                    Spark10
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-right font-semibold">
+                    RelVol10
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-right font-semibold">
+                    Vol
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-right font-semibold">
+                    AvgVol10
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">
+                    Leaders
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800 bg-gray-900/40">
+                {sortedLeaderboardRows.map((row) => {
+                  const isExpanded = expandedSectors.has(row.id);
+                  const percent = formatPercent(row.metrics.oneDayChange, 2);
+                  const relVolDisplay = formatRelativeVolume(row.metrics.relVol10);
+                  const volumeDisplay = formatCompactNumber(row.metrics.volume);
+                  const avgVolumeDisplay = formatCompactNumber(row.metrics.avgVolume10);
+                  const caretRotation = isExpanded ? "rotate-180" : "rotate-0";
+                  const leaders = row.metrics.leaders;
+
+                  return (
+                    <React.Fragment key={row.id}>
+                      <tr className="bg-gray-900/50 transition hover:bg-gray-900/70">
+                        <td className="px-4 py-3 text-sm font-medium text-gray-200">
+                          <button
+                            type="button"
+                            onClick={() => toggleSectorExpansion(row.id)}
+                            className="flex items-center gap-3 text-left"
+                          >
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-700 bg-gray-900">
+                              <svg
+                                className={`h-3.5 w-3.5 transform transition ${caretRotation}`}
+                                viewBox="0 0 20 20"
+                                fill="none"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  d="M6 8l4 4 4-4"
+                                  strokeWidth="1.6"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                            </span>
+                            <div className="flex flex-col">
+                              <span>{row.name}</span>
+                              <span className="text-xs text-gray-500">
+                                {row.tickers.length} tickers
+                              </span>
+                            </div>
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm font-mono">
+                          <span className={percent.tone}>{percent.text}</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <Sparkline values={row.metrics.sparkline} />
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-200">
+                          {relVolDisplay}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-300">
+                          {isExpanded ? volumeDisplay : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-300">
+                          {isExpanded ? avgVolumeDisplay : "—"}
+                        </td>
+                        <td className="px-4 py-3">
+                          {leaders.length ? (
+                            <div className="flex flex-wrap gap-2">
+                              {leaders.map((leader) => {
+                                const leaderDelta = formatPercent(leader.change, 1);
+                                return (
+                                  <span
+                                    key={leader.ticker}
+                                    className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-900/60 px-2 py-1 text-xs text-gray-200"
+                                  >
+                                    <span className="font-semibold text-gray-100">
+                                      {leader.ticker}
+                                    </span>
+                                    <span className={leaderDelta.tone}>{leaderDelta.text}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <span className="text-sm text-gray-500">—</span>
+                          )}
+                        </td>
+                      </tr>
+                      {isExpanded ? (
+                        <tr className="bg-gray-900/80">
+                          <td colSpan={7} className="px-4 pb-4">
+                            <div className="flex flex-col gap-3 text-xs text-gray-400">
+                              <div className="flex flex-wrap items-center gap-4">
+                                <span className="uppercase tracking-wide">
+                                  Vol{" "}
+                                  <span className="ml-1 text-sm text-gray-100">{volumeDisplay}</span>
+                                </span>
+                                <span className="uppercase tracking-wide">
+                                  AvgVol10{" "}
+                                  <span className="ml-1 text-sm text-gray-100">
+                                    {avgVolumeDisplay}
+                                  </span>
+                                </span>
+                                <span className="uppercase tracking-wide">
+                                  Members{" "}
+                                  <span className="ml-1 text-sm text-gray-100">
+                                    {row.tickers.length}
+                                  </span>
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {row.tickers.map((ticker) => (
+                                  <span
+                                    key={ticker}
+                                    className="rounded-full border border-gray-700 bg-gray-900/80 px-2 py-1 font-mono text-[11px] text-gray-300"
+                                  >
+                                    {ticker}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="mx-auto max-w-6xl space-y-5 text-gray-100">

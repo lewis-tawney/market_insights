@@ -3,6 +3,7 @@ import {
   IChartApi,
   ISeriesApi,
   LineData,
+  LineSeries,
   Time,
   UTCTimestamp,
   createChart,
@@ -151,7 +152,7 @@ export function IndexDivergenceCard() {
     chartRef.current = chart;
 
     INDEX_SERIES.forEach(({ symbol, color }) => {
-      const series = chart.addLineSeries({
+      const series = chart.addSeries(LineSeries, {
         color,
         lineWidth: 2,
         priceLineVisible: false,

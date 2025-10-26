@@ -27,3 +27,6 @@ python-dateutil==2.9.0.post0
 pytz==2025.2
 
 # Charts were rendered in the frontend; no Python chart packages required.
+
+# Storage / snapshots
+duckdb==0.10.2

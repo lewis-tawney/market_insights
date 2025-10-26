@@ -9,6 +9,17 @@ import pandas as pd  # type: ignore[import]
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
+from app.schemas.sector_volume import (
+    SectorIn,
+    SectorVolumeDTO,
+    SectorVolumeRequest,
+)
+from app.services.sector_snapshot import (
+    aggregate_sectors,
+    load_latest_metrics_snapshot,
+    SnapshotNotFoundError,
+)
+
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 logger = logging.getLogger("market_insights.metrics")
 
@@ -198,6 +209,19 @@ async def _compute_trend_lite(provider, symbol: str) -> TrendLiteDTO:
 
 
 # ---------------- endpoints ----------------
+
+# -------- Sector volume snapshot --------
+
+
+@router.post("/sectors/volume", response_model=List[SectorVolumeDTO])
+async def sectors_volume(payload: SectorVolumeRequest):
+    try:
+        metrics_snapshot, inactive_symbols = load_latest_metrics_snapshot()
+    except SnapshotNotFoundError:
+        logger.error("No sector volume snapshot available; returning empty response")
+        return []
+
+    return aggregate_sectors(payload.sectors, metrics_snapshot, inactive_symbols)
 @router.get("/trend", response_model=TrendDTO)
 async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provider)):
     # Need ~200 trading days

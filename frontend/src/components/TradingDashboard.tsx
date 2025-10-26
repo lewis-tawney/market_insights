@@ -33,8 +33,12 @@ export default function TradingDashboard() {
             {activeTab === "dashboard" && (
               <>
                 {/* Top Controls */}
-                <div className="mb-6 flex justify-end">
-                  <div className="text-sm font-medium text-gray-200">{formattedDate}</div>
+                <div className="mb-6">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm font-medium text-gray-200 sm:text-right">
+                      {formattedDate}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex flex-col gap-6 xl:flex-row">
