@@ -238,6 +238,10 @@ For questions or issues:
 - Snapshots are persisted in DuckDB (`data/market.duckdb`) and mirrored under `snapshots/` as dated JSON plus `sectors_volume_latest.json`.
 - Alerts/logs: `logs/eod_snapshot.log` records each run; `logs/eod_snapshot_alerts.log` is appended when the job fails or the latest snapshot is older than 24 hours.
 - The `/metrics/sectors/volume` endpoint now serves the most recent snapshot only; if the job fails, the previous snapshot remains in use until the job succeeds.
+- Security config (edit `config.yaml` or set env vars):
+  - `security.allowed_ips` – CSV/list of IPs allowed to hit `/metrics/sectors/volume`; if empty, set `security.read_api_token` and send `Authorization: Bearer <TOKEN>`.
+  - `security.frontend_origin` – origin allowed by CORS (default `http://localhost:5173`).
+- Rate limiting: the snapshot endpoint enforces 60 requests/min per IP (burst ≤10). On exceed you’ll receive HTTP 429 with `Retry-After`; check `logs/eod_snapshot_alerts.log` for entries.
 
 ## 🔮 Roadmap
 

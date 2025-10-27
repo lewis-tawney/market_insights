@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import median
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import duckdb  # type: ignore[import]
 
@@ -216,6 +216,15 @@ def load_latest_metrics_snapshot() -> Tuple[Dict[str, TickerMetric], Set[str]]:
     raise SnapshotNotFoundError("Sector snapshot not found in DuckDB or JSON fallback")
 
 
+def load_snapshot_payload() -> Dict[str, Any]:
+    if not LATEST_SNAPSHOT_JSON.exists():
+        raise SnapshotNotFoundError("Snapshot JSON not found")
+    try:
+        return json.loads(LATEST_SNAPSHOT_JSON.read_text())
+    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+        raise SnapshotNotFoundError("Snapshot JSON corrupted") from exc
+
+
 def aggregate_sectors(
     sectors: List[SectorIn],
     metrics: Dict[str, TickerMetric],
@@ -342,5 +351,6 @@ __all__ = [
     "TickerMetric",
     "SnapshotNotFoundError",
     "load_latest_metrics_snapshot",
+    "load_snapshot_payload",
     "aggregate_sectors",
 ]

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Set, cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +15,7 @@ from app.routes.api import router as api_router
 from app.routes.metrics import router as metrics_router
 from engine.cache import CacheManager
 from engine.providers.base import MarketData
+from app.security import SecurityManager
 
 
 class CachedProvider:
@@ -58,6 +59,25 @@ class CachedProvider:
         )
 
 
+def _parse_allowed_ips(raw: Any) -> Set[str]:
+    ips: Set[str] = set()
+    if isinstance(raw, str):
+        items = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        items = [item for item in raw if isinstance(item, str)]
+    else:
+        items = []
+
+    for item in items:
+        normalized = item.replace(";", ",")
+        for fragment in normalized.split(","):
+            for token in fragment.split():
+                token_clean = token.strip()
+                if token_clean:
+                    ips.add(token_clean)
+    return ips
+
+
 def _make_provider(cfg: Dict[str, Any]) -> CachedProvider:
     cache_cfg = cfg.get("cache", {})
     ttl = cache_cfg.get("ttl", {})
@@ -88,10 +108,44 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Add CORS middleware
+# Security configuration
+security_cfg = cfg.get("security", {})
+frontend_origin_cfg = security_cfg.get("frontend_origin")
+frontend_origins: List[str] = []
+if isinstance(frontend_origin_cfg, str):
+    frontend_origins = [
+        origin.strip()
+        for origin in frontend_origin_cfg.split(",")
+        if origin.strip()
+    ]
+elif isinstance(frontend_origin_cfg, (list, tuple, set)):
+    for origin in frontend_origin_cfg:
+        if isinstance(origin, str):
+            trimmed = origin.strip()
+            if trimmed:
+                frontend_origins.append(trimmed)
+
+if not frontend_origins:
+    frontend_origins = ["http://localhost:5173"]
+
+allowed_ips = _parse_allowed_ips(security_cfg.get("allowed_ips"))
+read_api_token = security_cfg.get("read_api_token") or None
+
+try:
+    security_manager = SecurityManager(
+        allowed_ips=allowed_ips,
+        read_api_token=read_api_token,
+    )
+except RuntimeError as exc:
+    logger.error("Security misconfiguration: %s", exc)
+    raise
+
+app.state.security = security_manager
+
+# Add CORS middleware restricted to configured origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=frontend_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

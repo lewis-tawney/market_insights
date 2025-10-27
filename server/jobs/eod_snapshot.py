@@ -116,10 +116,10 @@ def record_failure(conn: duckdb.DuckDBPyConnection, symbol: str) -> None:
     conn.execute(
         """
         INSERT INTO ticker_failures(symbol, failure_count, last_failure)
-        VALUES (?, 1, current_timestamp)
+        VALUES (?, 1, now())
         ON CONFLICT(symbol) DO UPDATE
         SET failure_count = ticker_failures.failure_count + 1,
-            last_failure = current_timestamp
+            last_failure = now()
         """,
         (symbol,),
     )

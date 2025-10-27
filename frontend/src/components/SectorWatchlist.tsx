@@ -1,12 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { TrendLiteResponse, OhlcPoint, SectorIn, SectorVolumeDTO } from "../lib/api";
-import { fetchTrendLiteBulk, fetchOhlcSeries, fetchSectorVolumeAggregate } from "../lib/api";
+import {
+  fetchTrendLiteBulk,
+  fetchOhlcSeries,
+  fetchSectorVolumeAggregate,
+  fetchSnapshotHealth,
+  type SnapshotHealthSummary,
+} from "../lib/api";
 import { isFeatureEnabled } from "../lib/features";
 import {
   buildSectorLeaderboard,
   sortLeaderboardRows,
+  computeFiveDayPercentChange,
+  computeVolumeStats,
   type LeaderboardRow,
   type LeaderboardSortKey,
+  type LeaderboardSortPreset,
   formatCompactNumber,
 } from "../lib/sectorLeaderboard";
 
@@ -428,6 +437,42 @@ function formatRelativeVolume(value: number | null | undefined): string {
   return `${value.toFixed(2)}×`;
 }
 
+function formatSnapshotTimestamp(metadata: SnapshotHealthSummary | null): string {
+  if (!metadata) {
+    return "—";
+  }
+  const { asOfDate, asOfTimeET } = metadata;
+  let formattedDate: string | null = null;
+  if (asOfDate) {
+    const parts = asOfDate.split("-");
+    if (parts.length === 3) {
+      const [year, month, day] = parts.map((value) => parseInt(value, 10));
+      if (!Number.isNaN(year) && !Number.isNaN(month) && !Number.isNaN(day)) {
+        const date = new Date(year, month - 1, day);
+        formattedDate = date.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        });
+      }
+    }
+    if (!formattedDate) {
+      formattedDate = asOfDate;
+    }
+  }
+
+  if (formattedDate && asOfTimeET) {
+    return `${formattedDate} ${asOfTimeET} ET`;
+  }
+  if (formattedDate) {
+    return formattedDate;
+  }
+  if (asOfTimeET) {
+    return `${asOfTimeET} ET`;
+  }
+  return "—";
+}
+
 function formatAsOf(value: string | null | undefined): string {
   if (!value) {
     return "—";
@@ -659,6 +704,44 @@ function Sparkline({ values }: { values: number[] }) {
   );
 }
 
+function extractRelativeVolume(series: OhlcPoint[] | null | undefined): {
+  relVol10: number | null;
+  latest: number | null;
+  avgVolume10: number | null;
+} {
+  const stats = computeVolumeStats(series);
+  const { latest, avg10 } = stats;
+  if (latest === null || avg10 === null || avg10 === 0) {
+    return { relVol10: null, latest, avgVolume10: avg10 };
+  }
+  return {
+    relVol10: latest / avg10,
+    latest,
+    avgVolume10: avg10,
+  };
+}
+
+function SortIndicator({
+  active,
+  direction,
+}: {
+  active: boolean;
+  direction: "asc" | "desc";
+}) {
+  const tone = active ? "text-emerald-300" : "text-gray-500";
+  const rotation = direction === "desc" ? "rotate-180" : "";
+  return (
+    <svg
+      className={`h-3 w-3 transform transition-transform ${tone} ${rotation}`}
+      viewBox="0 0 12 12"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M6 2l4 6H2z" fill="currentColor" />
+    </svg>
+  );
+}
+
 export default function SectorWatchlist(): React.ReactElement {
   const [sectors, setSectors] = useState<Sector[]>(() => loadInitialSectors());
   const [tickerStates, setTickerStates] = useState<Record<string, TickerState>>({});
@@ -675,9 +758,15 @@ export default function SectorWatchlist(): React.ReactElement {
   const [filterTerm, setFilterTerm] = useState("");
   const [sortKey, setSortKey] = useState<"performance" | "breadth" | "name">("performance");
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(() => new Set());
-  const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSortKey>("relVol10");
+  const [leaderboardSort, setLeaderboardSort] = useState<LeaderboardSortPreset>({
+    key: "oneDayChange",
+    direction: "desc",
+  });
+  const [selectedSectorId, setSelectedSectorId] = useState<string | null>(null);
   const showVolumeLeaderboard = isFeatureEnabled("SECTORS_VOLUME_V1") || import.meta.env.DEV;
   const enableClientAdapter = false;
+  const [snapshotMetadata, setSnapshotMetadata] = useState<SnapshotHealthSummary | null>(null);
+  const [snapshotMetadataError, setSnapshotMetadataError] = useState<string | null>(null);
   const sortOptions: Array<{ key: "performance" | "breadth" | "name"; label: string }> = [
     { key: "performance", label: "Performance" },
     { key: "breadth", label: "Breadth" },
@@ -822,6 +911,7 @@ export default function SectorWatchlist(): React.ReactElement {
             tickers: sector.members,
             metrics: {
               oneDayChange: sector.change1d_median ?? null,
+              fiveDayChange: null,
               sparkline: Array.isArray(sector.spark10) ? sector.spark10 : [],
               relVol10: sector.relVol10_median ?? null,
               volume,
@@ -856,22 +946,91 @@ export default function SectorWatchlist(): React.ReactElement {
     };
   }, [showVolumeLeaderboard, sectors, refreshKey]);
 
+  useEffect(() => {
+    if (!showVolumeLeaderboard) {
+      setSnapshotMetadata(null);
+      setSnapshotMetadataError(null);
+      return;
+    }
+
+    let alive = true;
+    (async () => {
+      try {
+        const data = await fetchSnapshotHealth();
+        if (!alive) {
+          return;
+        }
+        setSnapshotMetadata(data);
+        setSnapshotMetadataError(null);
+      } catch (error: any) {
+        if (!alive) {
+          return;
+        }
+        const message =
+          typeof error?.message === "string" && error.message.trim()
+            ? error.message
+            : "Unable to load snapshot metadata";
+        setSnapshotMetadata(null);
+        setSnapshotMetadataError(message);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [showVolumeLeaderboard, refreshKey]);
+
   const leaderboardRows = useMemo<LeaderboardRow[]>(() => {
     if (!showVolumeLeaderboard) {
       return [];
     }
+
+    let baseRows: LeaderboardRow[] = [];
     if (serverRows.length) {
-      return serverRows;
-    }
-    if (enableClientAdapter) {
-      return buildSectorLeaderboard({
+      baseRows = serverRows;
+    } else if (enableClientAdapter) {
+      baseRows = buildSectorLeaderboard({
         sectors,
         trendMap: tickerTrendMap,
         seriesMap: tickerSeriesMap,
       });
     }
-    return [];
-  }, [showVolumeLeaderboard, serverRows, enableClientAdapter, sectors, tickerTrendMap, tickerSeriesMap]);
+
+    if (!baseRows.length) {
+      return baseRows;
+    }
+
+    return baseRows.map((row) => {
+      let sum = 0;
+      let count = 0;
+      row.tickers.forEach((ticker) => {
+        const change = computeFiveDayPercentChange(tickerSeriesMap[ticker]);
+        if (change !== null && Number.isFinite(change)) {
+          sum += change;
+          count += 1;
+        }
+      });
+      const computed = count ? sum / count : null;
+      const existing = row.metrics.fiveDayChange;
+      const finalValue =
+        typeof existing === "number" && Number.isFinite(existing) ? existing : computed;
+      return {
+        ...row,
+        metrics: {
+          ...row.metrics,
+          fiveDayChange:
+            finalValue !== null && Number.isFinite(finalValue) ? finalValue : null,
+        },
+      };
+    });
+  }, [
+    showVolumeLeaderboard,
+    serverRows,
+    enableClientAdapter,
+    sectors,
+    tickerTrendMap,
+    tickerSeriesMap,
+  ]);
 
   const filteredLeaderboardRows = useMemo<LeaderboardRow[]>(() => {
     if (!showVolumeLeaderboard) {
@@ -896,15 +1055,90 @@ export default function SectorWatchlist(): React.ReactElement {
     return sortLeaderboardRows(filteredLeaderboardRows, leaderboardSort);
   }, [showVolumeLeaderboard, filteredLeaderboardRows, leaderboardSort]);
 
-  const leaderboardSortOptions: Array<{ key: LeaderboardSortKey; label: string; description: string }> = [
-    { key: "relVol10", label: "RelVol10", description: "Relative volume (10 days)" },
-    { key: "oneDayChange", label: "1D%", description: "Average 1-day percent change" },
-    {
-      key: "volumeMomentum",
-      label: "Vol Momentum",
-      description: "(Vol - AvgVol10) / AvgVol10",
-    },
-  ];
+  const highestOneDaySectorId = useMemo(() => {
+    if (!filteredLeaderboardRows.length) {
+      return null;
+    }
+    const ranked = [...filteredLeaderboardRows].sort((a, b) => {
+      const aValue =
+        typeof a.metrics.oneDayChange === "number" && Number.isFinite(a.metrics.oneDayChange)
+          ? a.metrics.oneDayChange
+          : Number.NEGATIVE_INFINITY;
+      const bValue =
+        typeof b.metrics.oneDayChange === "number" && Number.isFinite(b.metrics.oneDayChange)
+          ? b.metrics.oneDayChange
+          : Number.NEGATIVE_INFINITY;
+      if (aValue === bValue) {
+        return a.name.localeCompare(b.name);
+      }
+      return bValue - aValue;
+    });
+    const candidate = ranked.find(
+      (row) => typeof row.metrics.oneDayChange === "number" && Number.isFinite(row.metrics.oneDayChange)
+    );
+    return (candidate ?? ranked[0])?.id ?? null;
+  }, [filteredLeaderboardRows]);
+
+  useEffect(() => {
+    if (!filteredLeaderboardRows.length) {
+      if (selectedSectorId !== null) {
+        setSelectedSectorId(null);
+      }
+      return;
+    }
+    const stillVisible =
+      selectedSectorId !== null &&
+      filteredLeaderboardRows.some((row) => row.id === selectedSectorId);
+    if (stillVisible) {
+      return;
+    }
+    if (highestOneDaySectorId && highestOneDaySectorId !== selectedSectorId) {
+      setSelectedSectorId(highestOneDaySectorId);
+    }
+  }, [filteredLeaderboardRows, selectedSectorId, highestOneDaySectorId]);
+
+  const selectedRow = useMemo(() => {
+    if (!selectedSectorId) {
+      return null;
+    }
+    return (
+      sortedLeaderboardRows.find((row) => row.id === selectedSectorId) ??
+      filteredLeaderboardRows.find((row) => row.id === selectedSectorId) ??
+      null
+    );
+  }, [selectedSectorId, sortedLeaderboardRows, filteredLeaderboardRows]);
+
+  const selectedSector = useMemo(() => {
+    if (!selectedSectorId) {
+      return null;
+    }
+    return sectors.find((sector) => sector.id === selectedSectorId) ?? null;
+  }, [sectors, selectedSectorId]);
+
+  const selectedStocks = useMemo(() => {
+    if (!selectedSector) {
+      return [];
+    }
+    return selectedSector.tickers.map((ticker) => {
+      const trendState = tickerStates[ticker];
+      const seriesState = seriesStates[ticker];
+      const change1d = computeChange(trendState?.data);
+      const change5d = computeFiveDayPercentChange(tickerSeriesMap[ticker]);
+      const { relVol10 } = extractRelativeVolume(tickerSeriesMap[ticker]);
+
+      return {
+        ticker,
+        price: trendState?.data?.price ?? null,
+        change1d,
+        change5d,
+        relVol10,
+        trend: trendState?.data ?? null,
+        loading: Boolean(trendState?.loading || seriesState?.loading),
+        error: trendState?.error ?? seriesState?.error ?? null,
+        updated: trendState?.data?.as_of ?? null,
+      };
+    });
+  }, [selectedSector, tickerStates, seriesStates, tickerSeriesMap]);
 
   const trackedTickerCount = useMemo(() => {
     return sectors.reduce((acc, sector) => acc + sector.tickers.length, 0);
@@ -1163,6 +1397,18 @@ export default function SectorWatchlist(): React.ReactElement {
     setRefreshKey((key) => key + 1);
   };
 
+  const handleLeaderboardSortToggle = (key: LeaderboardSortKey) => {
+    setLeaderboardSort((prev) => {
+      if (prev.key === key) {
+        return {
+          key,
+          direction: prev.direction === "desc" ? "asc" : "desc",
+        };
+      }
+      return { key, direction: "desc" };
+    });
+  };
+
   const handleToggleAddTicker = (sectorId: string) => {
     setAddingTickerFor((current) => (current === sectorId ? null : sectorId));
     setInputErrors((prev) => ({ ...prev, [sectorId]: null }));
@@ -1292,6 +1538,216 @@ export default function SectorWatchlist(): React.ReactElement {
   };
 
   if (showVolumeLeaderboard) {
+    const snapshotUpdatedDisplay = formatSnapshotTimestamp(snapshotMetadata);
+    const snapshotIsStale = snapshotMetadata?.stale ?? false;
+
+    const renderSortableHeader = (
+      label: string,
+      key: LeaderboardSortKey,
+      align: "left" | "right" = "right"
+    ) => {
+      const active = leaderboardSort.key === key;
+      const direction = active ? leaderboardSort.direction : "desc";
+      return (
+        <button
+          type="button"
+          onClick={() => handleLeaderboardSortToggle(key)}
+          className={`group inline-flex w-full items-center gap-1 ${
+            align === "right" ? "justify-end" : "justify-start"
+          } text-xs font-semibold transition ${
+            active ? "text-emerald-300" : "text-gray-300 hover:text-gray-100"
+          }`}
+        >
+          <span>{label}</span>
+          <SortIndicator active={active} direction={direction} />
+        </button>
+      );
+    };
+
+    let leaderboardContent: React.ReactNode;
+    if (serverError) {
+      leaderboardContent = (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+          {serverError}
+        </div>
+      );
+    } else if (serverLoading) {
+      leaderboardContent = (
+        <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
+          Loading sector volume data…
+        </div>
+      );
+    } else if (sortedLeaderboardRows.length === 0) {
+      leaderboardContent = (
+        <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
+          No sectors match your filter. Clear the search to see everything.
+        </div>
+      );
+    } else {
+      leaderboardContent = (
+        <div className="overflow-hidden rounded-xl border border-gray-800">
+          <table className="min-w-full divide-y divide-gray-800">
+            <thead className="bg-gray-900/80 text-xs uppercase tracking-wide text-gray-400">
+              <tr>
+                <th scope="col" className="px-4 py-3 text-left font-semibold">
+                  Sector
+                </th>
+                <th scope="col" className="px-4 py-3 text-right font-semibold">
+                  {renderSortableHeader("1D%", "oneDayChange")}
+                </th>
+                <th scope="col" className="px-4 py-3 text-right font-semibold">
+                  {renderSortableHeader("5D%", "fiveDayChange")}
+                </th>
+                <th scope="col" className="px-4 py-3 text-left font-semibold">
+                  Spark 10
+                </th>
+                <th scope="col" className="px-4 py-3 text-right font-semibold">
+                  {renderSortableHeader("RelVol10", "relVol10")}
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800 bg-gray-900/40">
+              {sortedLeaderboardRows.map((row) => {
+                const isExpanded = expandedSectors.has(row.id);
+                const isSelected = row.id === selectedSectorId;
+                const percent1d = formatPercent(row.metrics.oneDayChange, 2);
+                const percent5d = formatPercent(row.metrics.fiveDayChange, 2);
+                const relVolDisplay = formatRelativeVolume(row.metrics.relVol10);
+                const volumeDisplay = formatCompactNumber(row.metrics.volume);
+                const avgVolumeDisplay = formatCompactNumber(row.metrics.avgVolume10);
+                const caretRotation = isExpanded ? "rotate-180" : "rotate-0";
+                const leaders = row.metrics.leaders;
+
+                return (
+                  <React.Fragment key={row.id}>
+                    <tr
+                      className={`transition ${
+                        isSelected
+                          ? "bg-gray-900/70 ring-1 ring-emerald-400/30"
+                          : "bg-gray-900/50 hover:bg-gray-900/70"
+                      }`}
+                      onClick={() => setSelectedSectorId(row.id)}
+                    >
+                      <td className="px-4 py-3 text-sm font-medium text-gray-200">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedSectorId(row.id);
+                            toggleSectorExpansion(row.id);
+                          }}
+                          className="flex items-center gap-3 text-left"
+                        >
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-700 bg-gray-900">
+                            <svg
+                              className={`h-3.5 w-3.5 transform transition ${caretRotation}`}
+                              viewBox="0 0 20 20"
+                              fill="none"
+                              stroke="currentColor"
+                            >
+                              <path
+                                d="M6 8l4 4 4-4"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </span>
+                          <div className="flex flex-col">
+                            <span className={isSelected ? "text-emerald-200" : undefined}>
+                              {row.name}
+                            </span>
+                            <span className="text-xs text-gray-500">
+                              {row.tickers.length} tickers
+                            </span>
+                          </div>
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm font-mono">
+                        <span className={percent1d.tone}>{percent1d.text}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm font-mono">
+                        <span className={percent5d.tone}>{percent5d.text}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Sparkline values={row.metrics.sparkline} />
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm text-gray-200">
+                        {relVolDisplay}
+                      </td>
+                    </tr>
+                    {isExpanded ? (
+                      <tr className="bg-gray-900/80">
+                        <td colSpan={5} className="px-4 pb-4">
+                          <div className="flex flex-col gap-3 text-xs text-gray-400">
+                            <div className="flex flex-wrap items-center gap-4">
+                              <span className="uppercase tracking-wide">
+                                Vol{" "}
+                                <span className="ml-1 text-sm text-gray-100">{volumeDisplay}</span>
+                              </span>
+                              <span className="uppercase tracking-wide">
+                                AvgVol10{" "}
+                                <span className="ml-1 text-sm text-gray-100">
+                                  {avgVolumeDisplay}
+                                </span>
+                              </span>
+                              <span className="uppercase tracking-wide">
+                                Members{" "}
+                                <span className="ml-1 text-sm text-gray-100">
+                                  {row.tickers.length}
+                                </span>
+                              </span>
+                            </div>
+                            {leaders.length ? (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="uppercase tracking-wide text-gray-500">Leaders</span>
+                                {leaders.map((leader) => {
+                                  const leaderDelta = formatPercent(leader.change, 1);
+                                  return (
+                                    <span
+                                      key={leader.ticker}
+                                      className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-900/60 px-2 py-1 text-xs text-gray-200"
+                                    >
+                                      <span className="font-semibold text-gray-100">
+                                        {leader.ticker}
+                                      </span>
+                                      <span className={leaderDelta.tone}>{leaderDelta.text}</span>
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                            <div className="flex flex-wrap gap-2">
+                              {row.tickers.map((ticker) => (
+                                <span
+                                  key={ticker}
+                                  className="rounded-full border border-gray-700 bg-gray-900/80 px-2 py-1 font-mono text-[11px] text-gray-300"
+                                >
+                                  {ticker}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    const sectorSummary = selectedRow
+      ? {
+          oneDay: formatPercent(selectedRow.metrics.oneDayChange, 2),
+          fiveDay: formatPercent(selectedRow.metrics.fiveDayChange, 2),
+          relVol: formatRelativeVolume(selectedRow.metrics.relVol10),
+        }
+      : null;
+
     return (
       <section className="mx-auto max-w-6xl space-y-5 text-gray-100">
         <div className="rounded-xl border border-gray-700 bg-gray-800/80 p-4 space-y-4">
@@ -1301,6 +1757,13 @@ export default function SectorWatchlist(): React.ReactElement {
               <p className="text-xs text-gray-400">
                 Tracking {sectors.length} sectors &bull; {trackedTickerCount} tickers.
               </p>
+              <p className={`text-xs ${snapshotIsStale ? "text-amber-300" : "text-gray-500"}`}>
+                Last updated: {snapshotUpdatedDisplay}
+                {snapshotIsStale && snapshotUpdatedDisplay !== "—" ? " • Data may be stale" : ""}
+              </p>
+              {snapshotMetadataError ? (
+                <p className="text-[11px] text-rose-300">Snapshot metadata unavailable.</p>
+              ) : null}
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
               <input
@@ -1311,25 +1774,19 @@ export default function SectorWatchlist(): React.ReactElement {
                 className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400 sm:w-56"
               />
               <div className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-900/60 p-1">
-                {leaderboardSortOptions.map((option) => {
-                  const active = leaderboardSort === option.key;
-                  return (
-                    <button
-                      key={option.key}
-                      type="button"
-                      onClick={() => setLeaderboardSort(option.key)}
-                      aria-pressed={active}
-                      title={option.description}
-                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
-                        active
-                          ? "bg-emerald-500/20 text-emerald-300"
-                          : "text-gray-300 hover:text-gray-100"
-                      }`}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
+                <button
+                  type="button"
+                  className="rounded-md px-3 py-1 text-xs font-semibold text-emerald-300"
+                >
+                  Sectors
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md px-3 py-1 text-xs font-medium text-gray-500/70"
+                  disabled
+                >
+                  Stocks
+                </button>
               </div>
               <button
                 type="button"
@@ -1342,169 +1799,111 @@ export default function SectorWatchlist(): React.ReactElement {
           </div>
         </div>
 
-        {serverError ? (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
-            {serverError}
-          </div>
-        ) : serverLoading ? (
-          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
-            Loading sector volume data…
-          </div>
-        ) : sortedLeaderboardRows.length === 0 ? (
-          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
-            No sectors match your filter. Clear the search to see everything.
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-xl border border-gray-800">
-            <table className="min-w-full divide-y divide-gray-800">
-              <thead className="bg-gray-900/80 text-xs uppercase tracking-wide text-gray-400">
-                <tr>
-                  <th scope="col" className="px-4 py-3 text-left font-semibold">
-                    Sector
-                  </th>
-                  <th scope="col" className="px-4 py-3 text-right font-semibold">
-                    1D%
-                  </th>
-                  <th scope="col" className="px-4 py-3 text-left font-semibold">
-                    Spark10
-                  </th>
-                  <th scope="col" className="px-4 py-3 text-right font-semibold">
-                    RelVol10
-                  </th>
-                  <th scope="col" className="px-4 py-3 text-right font-semibold">
-                    Vol
-                  </th>
-                  <th scope="col" className="px-4 py-3 text-right font-semibold">
-                    AvgVol10
-                  </th>
-                  <th scope="col" className="px-4 py-3 text-left font-semibold">
-                    Leaders
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800 bg-gray-900/40">
-                {sortedLeaderboardRows.map((row) => {
-                  const isExpanded = expandedSectors.has(row.id);
-                  const percent = formatPercent(row.metrics.oneDayChange, 2);
-                  const relVolDisplay = formatRelativeVolume(row.metrics.relVol10);
-                  const volumeDisplay = formatCompactNumber(row.metrics.volume);
-                  const avgVolumeDisplay = formatCompactNumber(row.metrics.avgVolume10);
-                  const caretRotation = isExpanded ? "rotate-180" : "rotate-0";
-                  const leaders = row.metrics.leaders;
-
-                  return (
-                    <React.Fragment key={row.id}>
-                      <tr className="bg-gray-900/50 transition hover:bg-gray-900/70">
-                        <td className="px-4 py-3 text-sm font-medium text-gray-200">
-                          <button
-                            type="button"
-                            onClick={() => toggleSectorExpansion(row.id)}
-                            className="flex items-center gap-3 text-left"
-                          >
-                            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-gray-700 bg-gray-900">
-                              <svg
-                                className={`h-3.5 w-3.5 transform transition ${caretRotation}`}
-                                viewBox="0 0 20 20"
-                                fill="none"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  d="M6 8l4 4 4-4"
-                                  strokeWidth="1.6"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                            </span>
-                            <div className="flex flex-col">
-                              <span>{row.name}</span>
-                              <span className="text-xs text-gray-500">
-                                {row.tickers.length} tickers
-                              </span>
-                            </div>
-                          </button>
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm font-mono">
-                          <span className={percent.tone}>{percent.text}</span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Sparkline values={row.metrics.sparkline} />
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm text-gray-200">
-                          {relVolDisplay}
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm text-gray-300">
-                          {isExpanded ? volumeDisplay : "—"}
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm text-gray-300">
-                          {isExpanded ? avgVolumeDisplay : "—"}
-                        </td>
-                        <td className="px-4 py-3">
-                          {leaders.length ? (
-                            <div className="flex flex-wrap gap-2">
-                              {leaders.map((leader) => {
-                                const leaderDelta = formatPercent(leader.change, 1);
-                                return (
-                                  <span
-                                    key={leader.ticker}
-                                    className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-900/60 px-2 py-1 text-xs text-gray-200"
-                                  >
-                                    <span className="font-semibold text-gray-100">
-                                      {leader.ticker}
-                                    </span>
-                                    <span className={leaderDelta.tone}>{leaderDelta.text}</span>
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <span className="text-sm text-gray-500">—</span>
-                          )}
-                        </td>
+        <div className="space-y-4 lg:grid lg:grid-cols-[2fr_1fr] lg:items-start lg:gap-4 lg:space-y-0">
+          <div>{leaderboardContent}</div>
+          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-4 space-y-4">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold text-gray-100">
+                  {selectedRow ? selectedRow.name : "Select a sector"}
+                </h4>
+                <span className="text-xs text-gray-500">
+                  {selectedSector ? `${selectedSector.tickers.length} tickers` : ""}
+                </span>
+              </div>
+              {sectorSummary ? (
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-400">
+                  <span className="flex items-center gap-1">
+                    1D{" "}
+                    <span className={`font-mono ${sectorSummary.oneDay.tone}`}>
+                      {sectorSummary.oneDay.text}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    5D{" "}
+                    <span className={`font-mono ${sectorSummary.fiveDay.tone}`}>
+                      {sectorSummary.fiveDay.text}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    RelVol10{" "}
+                    <span className="font-mono text-gray-200">{sectorSummary.relVol}</span>
+                  </span>
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-gray-500">
+                  Choose a sector to see its members and recent performance.
+                </p>
+              )}
+            </div>
+            {selectedSector ? (
+              selectedSector.tickers.length ? (
+                <div className="overflow-hidden rounded-lg border border-gray-800">
+                  <table className="min-w-full divide-y divide-gray-800">
+                    <thead className="bg-gray-900/80 text-[11px] uppercase tracking-wide text-gray-400">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold">Ticker</th>
+                        <th className="px-3 py-2 text-right font-semibold">Price</th>
+                        <th className="px-3 py-2 text-right font-semibold">1D%</th>
+                        <th className="px-3 py-2 text-right font-semibold">5D%</th>
+                        <th className="px-3 py-2 text-right font-semibold">RelVol10</th>
+                        <th className="px-3 py-2 text-center font-semibold">Trend</th>
                       </tr>
-                      {isExpanded ? (
-                        <tr className="bg-gray-900/80">
-                          <td colSpan={7} className="px-4 pb-4">
-                            <div className="flex flex-col gap-3 text-xs text-gray-400">
-                              <div className="flex flex-wrap items-center gap-4">
-                                <span className="uppercase tracking-wide">
-                                  Vol{" "}
-                                  <span className="ml-1 text-sm text-gray-100">{volumeDisplay}</span>
+                    </thead>
+                    <tbody className="divide-y divide-gray-800 bg-gray-900/40">
+                      {selectedStocks.map((stock) => {
+                        const priceDisplay = formatPrice(stock.price);
+                        const change1dDisplay = formatPercent(stock.change1d, 2);
+                        const change5dDisplay = formatPercent(stock.change5d, 2);
+                        const relVol = formatRelativeVolume(stock.relVol10);
+                        const status = stock.loading
+                          ? { text: "Loading…", tone: "text-gray-500" }
+                          : stock.error
+                          ? { text: stock.error, tone: "text-rose-400" }
+                          : { text: formatAsOf(stock.updated), tone: "text-gray-500" };
+                        return (
+                          <tr key={stock.ticker} className="bg-gray-900/50 hover:bg-gray-900/70">
+                            <td className="px-3 py-2">
+                              <div className="flex flex-col">
+                                <span className="font-mono text-sm text-gray-100">
+                                  {stock.ticker}
                                 </span>
-                                <span className="uppercase tracking-wide">
-                                  AvgVol10{" "}
-                                  <span className="ml-1 text-sm text-gray-100">
-                                    {avgVolumeDisplay}
-                                  </span>
-                                </span>
-                                <span className="uppercase tracking-wide">
-                                  Members{" "}
-                                  <span className="ml-1 text-sm text-gray-100">
-                                    {row.tickers.length}
-                                  </span>
-                                </span>
+                                <span className={`text-[10px] ${status.tone}`}>{status.text}</span>
                               </div>
-                              <div className="flex flex-wrap gap-2">
-                                {row.tickers.map((ticker) => (
-                                  <span
-                                    key={ticker}
-                                    className="rounded-full border border-gray-700 bg-gray-900/80 px-2 py-1 font-mono text-[11px] text-gray-300"
-                                  >
-                                    {ticker}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : null}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono text-sm text-gray-200">
+                              {priceDisplay}
+                            </td>
+                            <td className={`px-3 py-2 text-right font-mono text-xs ${change1dDisplay.tone}`}>
+                              {change1dDisplay.text}
+                            </td>
+                            <td className={`px-3 py-2 text-right font-mono text-xs ${change5dDisplay.tone}`}>
+                              {change5dDisplay.text}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono text-xs text-gray-200">
+                              {relVol}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <TrendSignals data={stock.trend} />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/40 p-4 text-sm text-gray-400">
+                  No tickers tracked in this sector yet.
+                </div>
+              )
+            ) : (
+              <div className="rounded-lg border border-dashed border-gray-700 bg-gray-900/40 p-4 text-sm text-gray-400">
+                Select a sector to inspect its members.
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </section>
     );
   }

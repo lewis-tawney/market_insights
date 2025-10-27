@@ -4,11 +4,20 @@ from __future__ import annotations
 import time
 from math import isnan
 from pathlib import Path
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd  # type: ignore[import]
+import pytz  # type: ignore[import]
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+
+from app.services.sector_snapshot import (
+    SnapshotNotFoundError,
+    load_latest_metrics_snapshot,
+    load_snapshot_payload,
+)
 
 router = APIRouter()
 
@@ -59,6 +68,56 @@ async def health(request: Request):
         request.app.state.config.get("provider", {}).get("kind") or "market_data"
     ).lower()
     return {"status": "ok", "provider": provider_kind}
+
+
+@router.get("/health/snapshot")
+async def snapshot_health() -> Dict[str, Any]:
+    try:
+        payload = load_snapshot_payload()
+    except SnapshotNotFoundError:
+        raise HTTPException(status_code=503, detail="Snapshot unavailable")
+
+    try:
+        metrics, inactive = load_latest_metrics_snapshot()
+    except SnapshotNotFoundError:
+        metrics, inactive = {}, set()
+
+    snapshot_date = payload.get("snapshot_date")
+    generated_at_str = payload.get("generated_at")
+    generated_dt_utc: Optional[datetime] = None
+    if isinstance(generated_at_str, str):
+        try:
+            generated_dt_utc = datetime.fromisoformat(generated_at_str)
+        except ValueError:
+            generated_dt_utc = None
+        if generated_dt_utc and generated_dt_utc.tzinfo is None:
+            generated_dt_utc = generated_dt_utc.replace(tzinfo=timezone.utc)
+
+    eastern = pytz.timezone("America/New_York")
+    if generated_dt_utc:
+        as_of_time_et = generated_dt_utc.astimezone(eastern).strftime("%H:%M:%S")
+        age = datetime.now(timezone.utc) - generated_dt_utc.astimezone(timezone.utc)
+        stale = age > timedelta(hours=24)
+    else:
+        as_of_time_et = None
+        stale = True
+
+    sectors_data = payload.get("sectors", [])
+    sectors_count = len(sectors_data) if isinstance(sectors_data, list) else 0
+    members_count = 0
+    if isinstance(sectors_data, list):
+        for entry in sectors_data:
+            members = entry.get("members") if isinstance(entry, dict) else None
+            if isinstance(members, list):
+                members_count += len(members)
+
+    return {
+        "asOfDate": snapshot_date,
+        "asOfTimeET": as_of_time_et,
+        "sectors_count": sectors_count,
+        "members_count": members_count,
+        "stale": stale,
+    }
 
 
 @router.get("/price")

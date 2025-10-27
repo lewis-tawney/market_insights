@@ -38,6 +38,7 @@ cache/
 
 # Snapshot outputs
 data/*.duckdb
+data/*.duckdb.wal
 snapshots/*.json
 
 # Jupyter Notebooks

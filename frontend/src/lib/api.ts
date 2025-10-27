@@ -238,22 +238,21 @@ export interface SectorVolumeDTO {
   lastUpdated: string | null;
 }
 
-async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const url = join(BASE, path);
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
-  }
-  return (await res.json()) as T;
+export interface SnapshotHealthSummary {
+  asOfDate: string | null;
+  asOfTimeET: string | null;
+  sectors_count: number;
+  members_count: number;
+  stale: boolean;
 }
 
 export async function fetchSectorVolumeAggregate(sectors: SectorIn[]): Promise<SectorVolumeDTO[]> {
-  return postJSON<SectorVolumeDTO[]>(`/metrics/sectors/volume`, { sectors });
+  const payload = encodeURIComponent(JSON.stringify({ sectors }));
+  return getJSON<SectorVolumeDTO[]>(`/metrics/sectors/volume?payload=${payload}`);
+}
+
+export async function fetchSnapshotHealth(): Promise<SnapshotHealthSummary> {
+  return getJSON<SnapshotHealthSummary>(`/health/snapshot`);
 }
 
 const TREND_LITE_BATCH_SIZE = 40;

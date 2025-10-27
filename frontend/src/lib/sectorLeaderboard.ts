@@ -23,6 +23,7 @@ export type LeaderboardRow = {
   tickers: string[];
   metrics: {
     oneDayChange: number | null;
+    fiveDayChange: number | null;
     sparkline: number[];
     relVol10: number | null;
     volume: number | null;
@@ -32,7 +33,12 @@ export type LeaderboardRow = {
   };
 };
 
-export type LeaderboardSortKey = "relVol10" | "oneDayChange" | "volumeMomentum";
+export type LeaderboardSortKey = "relVol10" | "oneDayChange" | "fiveDayChange";
+export type LeaderboardSortDirection = "asc" | "desc";
+export type LeaderboardSortPreset = {
+  key: LeaderboardSortKey;
+  direction: LeaderboardSortDirection;
+};
 
 export interface BuildLeaderboardArgs {
   sectors: SectorDefinition[];
@@ -40,7 +46,7 @@ export interface BuildLeaderboardArgs {
   seriesMap: Record<string, TickerSeries>;
 }
 
-type VolumeStats = {
+export type VolumeStats = {
   latest: number | null;
   avg10: number | null;
 };
@@ -103,7 +109,7 @@ function computeDailyReturns(series: OhlcPoint[]): DailyChange[] {
   return changes;
 }
 
-function computeVolumeStats(series: OhlcPoint[] | undefined | null): VolumeStats {
+export function computeVolumeStats(series: OhlcPoint[] | undefined | null): VolumeStats {
   if (!series || !series.length) {
     return { latest: null, avg10: null };
   }
@@ -134,6 +140,40 @@ function computeVolumeStats(series: OhlcPoint[] | undefined | null): VolumeStats
     latest: toFinite(latest),
     avg10: toFinite(avg),
   };
+}
+
+export function computeFiveDayPercentChange(
+  series: OhlcPoint[] | null | undefined,
+  window = 5
+): number | null {
+  if (!series || !series.length || window < 1) {
+    return null;
+  }
+
+  const sorted = [...series]
+    .filter((point) => typeof point.close === "number" && point.close !== null)
+    .sort((a, b) => {
+      const aTime = Date.parse(a.time);
+      const bTime = Date.parse(b.time);
+      if (Number.isNaN(aTime) || Number.isNaN(bTime)) {
+        return a.time.localeCompare(b.time);
+      }
+      return aTime - bTime;
+    });
+
+  if (sorted.length <= window) {
+    return null;
+  }
+
+  const latest = toFinite(sorted[sorted.length - 1]?.close ?? null);
+  const base = toFinite(sorted[sorted.length - 1 - window]?.close ?? null);
+
+  if (latest === null || base === null || base === 0) {
+    return null;
+  }
+
+  const pct = ((latest - base) / base) * 100;
+  return toFinite(pct);
 }
 
 function computeSparkline(
@@ -185,6 +225,7 @@ export function buildSectorLeaderboard({
 }: BuildLeaderboardArgs): LeaderboardRow[] {
   return sectors.map((sector) => {
     const changes: number[] = [];
+    const fiveDayChanges: number[] = [];
     const leaderEntries: LeaderboardLeader[] = [];
 
     let totalVolume = 0;
@@ -201,6 +242,11 @@ export function buildSectorLeaderboard({
         leaderEntries.push({ ticker, change: null });
       }
 
+      const fiveDay = computeFiveDayPercentChange(seriesMap[ticker]);
+      if (fiveDay !== null) {
+        fiveDayChanges.push(fiveDay);
+      }
+
       const { latest, avg10 } = computeVolumeStats(seriesMap[ticker]);
       if (latest !== null) {
         totalVolume += latest;
@@ -214,6 +260,9 @@ export function buildSectorLeaderboard({
 
     const oneDayChange = changes.length
       ? changes.reduce((acc, value) => acc + value, 0) / changes.length
+      : null;
+    const fiveDayChange = fiveDayChanges.length
+      ? fiveDayChanges.reduce((acc, value) => acc + value, 0) / fiveDayChanges.length
       : null;
 
     const leaders = leaderEntries
@@ -240,6 +289,7 @@ export function buildSectorLeaderboard({
       tickers: sector.tickers,
       metrics: {
         oneDayChange,
+        fiveDayChange: toFinite(fiveDayChange),
         sparkline,
         relVol10: toFinite(relVol10),
         volume: toFinite(volume),
@@ -258,8 +308,8 @@ function accessorFactory(key: LeaderboardSortKey) {
         return toFinite(row.metrics.relVol10);
       case "oneDayChange":
         return toFinite(row.metrics.oneDayChange);
-      case "volumeMomentum":
-        return toFinite(row.metrics.volumeMomentum);
+      case "fiveDayChange":
+        return toFinite(row.metrics.fiveDayChange);
       default:
         return null;
     }
@@ -268,9 +318,12 @@ function accessorFactory(key: LeaderboardSortKey) {
 
 export function sortLeaderboardRows(
   rows: LeaderboardRow[],
-  preset: LeaderboardSortKey
+  preset: LeaderboardSortPreset
 ): LeaderboardRow[] {
-  const accessor = accessorFactory(preset);
+  const accessor = accessorFactory(preset.key);
+  const direction = preset.direction ?? "desc";
+  const factor = direction === "asc" ? 1 : -1;
+
   return [...rows].sort((a, b) => {
     const valueA = accessor(a);
     const valueB = accessor(b);
@@ -284,8 +337,8 @@ export function sortLeaderboardRows(
     if (valueB === null) {
       return -1;
     }
-    if (valueB !== valueA) {
-      return valueB - valueA;
+    if (valueA !== valueB) {
+      return factor * (valueA - valueB);
     }
     return a.name.localeCompare(b.name);
   });

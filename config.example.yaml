@@ -18,6 +18,13 @@ cache:
 rate_limit:
   requests_per_minute: 60
 
+security:
+  allowed_ips:
+    - "127.0.0.1"
+    - "::1"
+  read_api_token: ""
+  frontend_origin: "http://localhost:5173"
+
 modes:
   default:
     compass:

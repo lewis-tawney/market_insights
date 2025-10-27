@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd  # type: ignore[import]
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from pydantic import ValidationError
 
 from app.schemas.sector_volume import (
     SectorIn,
@@ -17,6 +21,7 @@ from app.schemas.sector_volume import (
 from app.services.sector_snapshot import (
     aggregate_sectors,
     load_latest_metrics_snapshot,
+    load_snapshot_payload,
     SnapshotNotFoundError,
 )
 
@@ -213,15 +218,77 @@ async def _compute_trend_lite(provider, symbol: str) -> TrendLiteDTO:
 # -------- Sector volume snapshot --------
 
 
-@router.post("/sectors/volume", response_model=List[SectorVolumeDTO])
-async def sectors_volume(payload: SectorVolumeRequest):
+@router.get("/sectors/volume", response_model=List[SectorVolumeDTO])
+async def sectors_volume(request: Request, payload: Optional[str] = Query(None)):
+    security = request.app.state.security
+    client_ip, token_id = security.authorize(request)
+    rate_headers = security.check_rate_limit(
+        client_ip=client_ip, token_id=token_id, route="/metrics/sectors/volume"
+    )
+
+    def _with_rate_headers(response: JSONResponse) -> JSONResponse:
+        for header, value in rate_headers.items():
+            response.headers[header] = value
+        return response
+
     try:
         metrics_snapshot, inactive_symbols = load_latest_metrics_snapshot()
     except SnapshotNotFoundError:
-        logger.error("No sector volume snapshot available; returning empty response")
-        return []
+        logger.error("No sector volume snapshot available; returning 503")
+        return _with_rate_headers(
+            JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "Sector snapshot unavailable"},
+            )
+        )
 
-    return aggregate_sectors(payload.sectors, metrics_snapshot, inactive_symbols)
+    try:
+        snapshot_payload = load_snapshot_payload()
+    except SnapshotNotFoundError:
+        logger.warning("Latest snapshot payload missing; default response unavailable")
+        snapshot_payload = {}
+
+    aggregated: List[SectorVolumeDTO]
+
+    if payload:
+        try:
+            payload_data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Invalid payload") from exc
+        try:
+            request_model = SectorVolumeRequest.model_validate(payload_data)
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail="Invalid sectors payload") from exc
+        aggregated = aggregate_sectors(
+            request_model.sectors, metrics_snapshot, inactive_symbols
+        )
+    else:
+        snapshot_sectors = snapshot_payload.get("sectors")
+        if not isinstance(snapshot_sectors, list):
+            logger.error("Snapshot payload missing sectors; returning 503")
+            return _with_rate_headers(
+                JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"detail": "Sector snapshot unavailable"},
+                )
+            )
+        aggregated = [
+            SectorVolumeDTO.model_validate(item)
+            for item in snapshot_sectors
+        ]
+
+    return _with_rate_headers(
+        JSONResponse(content=[item.model_dump() for item in aggregated])
+    )
+
+
+@router.post("/sectors/volume")
+async def sectors_volume_post_legacy():
+    raise HTTPException(
+        status_code=410,
+        detail="Use GET /metrics/sectors/volume",
+    )
+
 @router.get("/trend", response_model=TrendDTO)
 async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provider)):
     # Need ~200 trading days
