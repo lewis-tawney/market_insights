@@ -61,10 +61,15 @@ def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
             rel_vol10 DOUBLE,
             change1d DOUBLE,
             spark10 TEXT,
+            price_history TEXT,
             updated_at TIMESTAMP
         )
         """
     )
+    try:
+        conn.execute("ALTER TABLE ticker_metrics ADD COLUMN price_history TEXT")
+    except duckdb.Error:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS sector_snapshot (
@@ -260,7 +265,7 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
     try:
         rows = conn.execute(
             """
-            SELECT date, close, dollar_volume
+            SELECT date, close, volume, dollar_volume
             FROM ticker_ohlc
             WHERE symbol = ?
             ORDER BY date
@@ -275,9 +280,15 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
 
     dates: List[str] = []
     closes: List[float] = []
+    volumes: List[float] = []
     dollar_vols: List[float] = []
-    for date_val, close, dollar_volume in rows:
-        if date_val is None or close is None or dollar_volume is None:
+    for date_val, close, volume, dollar_volume in rows:
+        if (
+            date_val is None
+            or close is None
+            or dollar_volume is None
+            or volume is None
+        ):
             continue
         if hasattr(date_val, "isoformat"):
             date_str = date_val.isoformat()
@@ -285,14 +296,20 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
             date_str = str(date_val)
         try:
             close_val = float(close)
+            volume_val = float(volume)
             dv_val = float(dollar_volume)
         except (TypeError, ValueError):
             continue
         dates.append(date_str)
         closes.append(close_val)
+        volumes.append(volume_val)
         dollar_vols.append(dv_val)
 
-    if len(closes) < MIN_HISTORY_DAYS or len(dates) < MIN_HISTORY_DAYS:
+    if (
+        len(closes) < MIN_HISTORY_DAYS
+        or len(dates) < MIN_HISTORY_DAYS
+        or len(volumes) < MIN_HISTORY_DAYS
+    ):
         return None
 
     prev_dollar_vols = dollar_vols[-(MIN_HISTORY_DAYS): -1]
@@ -301,16 +318,6 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
     avg_dollar_vol10 = sum(prev_dollar_vols[-10:]) / 10.0
 
     dollar_vol_today = dollar_vols[-1]
-
-    change_series: List[Dict[str, float]] = []
-    for idx in range(1, len(closes)):
-        prev_close = closes[idx - 1]
-        curr_close = closes[idx]
-        if prev_close == 0:
-            continue
-        change = ((curr_close / prev_close) - 1.0) * 100.0
-        change_series.append({"date": dates[idx], "change": change})
-    spark_series = change_series[-10:]
 
     if len(closes) < 2:
         return None
@@ -322,6 +329,20 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
     if avg_dollar_vol10 and avg_dollar_vol10 != 0:
         rel_vol10 = dollar_vol_today / avg_dollar_vol10
 
+    history_window = 30
+    history_entries: List[Dict[str, float]] = []
+    for date_str, close_val, volume_val, dollar_val in zip(
+        dates[-history_window:], closes[-history_window:], volumes[-history_window:], dollar_vols[-history_window:]
+    ):
+        history_entries.append(
+            {
+                "date": date_str,
+                "close": close_val,
+                "volume": volume_val,
+                "dollarVolume": dollar_val,
+            }
+        )
+
     return TickerMetric(
         symbol=symbol,
         last_date=dates[-1],
@@ -329,7 +350,7 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
         avg_dollar_vol10=avg_dollar_vol10,
         rel_vol10=rel_vol10,
         change1d=change1d,
-        spark_series=spark_series,
+        history=history_entries,
     )
 
 
@@ -347,9 +368,10 @@ def upsert_ticker_metrics(
                 rel_vol10,
                 change1d,
                 spark10,
+                price_history,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             (
                 metric.symbol,
@@ -358,7 +380,8 @@ def upsert_ticker_metrics(
                 metric.avg_dollar_vol10,
                 metric.rel_vol10,
                 metric.change1d,
-                json.dumps(metric.spark_series),
+                None,
+                json.dumps(metric.history),
             ),
         )
 
@@ -372,7 +395,7 @@ def serialize_metrics(metrics: Dict[str, TickerMetric]) -> Dict[str, Dict[str, o
             "avg_dollar_vol10": metric.avg_dollar_vol10,
             "rel_vol10": metric.rel_vol10,
             "change1d": metric.change1d,
-            "spark10": metric.spark_series,
+            "history": metric.history,
         }
     return serialized
 

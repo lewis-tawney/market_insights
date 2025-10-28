@@ -272,10 +272,34 @@ async def sectors_volume(request: Request, payload: Optional[str] = Query(None))
                     content={"detail": "Sector snapshot unavailable"},
                 )
             )
-        aggregated = [
-            SectorVolumeDTO.model_validate(item)
-            for item in snapshot_sectors
-        ]
+        sector_inputs: List[SectorIn] = []
+        for entry in snapshot_sectors:
+            if not isinstance(entry, dict):
+                continue
+            members = entry.get("members")
+            if not isinstance(members, list):
+                continue
+            sector_id = entry.get("id") or entry.get("name")
+            sector_name = entry.get("name") or entry.get("id") or "Unknown"
+            if not isinstance(sector_id, str):
+                continue
+            tickers: List[str] = [
+                str(symbol).strip().upper()
+                for symbol in members
+                if isinstance(symbol, str) and symbol.strip()
+            ]
+            sector_inputs.append(
+                SectorIn(id=sector_id, name=str(sector_name), tickers=tickers)
+            )
+        if not sector_inputs:
+            logger.error("Snapshot payload contains no valid sectors; returning 503")
+            return _with_rate_headers(
+                JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"detail": "Sector snapshot unavailable"},
+                )
+            )
+        aggregated = aggregate_sectors(sector_inputs, metrics_snapshot, inactive_symbols)
 
     return _with_rate_headers(
         JSONResponse(content=[item.model_dump() for item in aggregated])

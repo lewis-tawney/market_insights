@@ -13,6 +13,7 @@ from app.schemas.sector_volume import (
     SectorIn,
     SectorVolumeDTO,
     TickerLeaderDTO,
+    TickerMetricDTO,
 )
 
 
@@ -37,7 +38,7 @@ class TickerMetric:
     avg_dollar_vol10: Optional[float]
     rel_vol10: Optional[float]
     change1d: Optional[float]
-    spark_series: List[Dict[str, float]]
+    history: List[Dict[str, float]]
 
 
 def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
@@ -48,13 +49,13 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
     try:
         rows = conn.execute(
             """
-            SELECT symbol,
-                   CAST(last_date AS VARCHAR) AS last_date,
-                   dollar_vol_today,
-                   avg_dollar_vol10,
+           SELECT symbol,
+                  CAST(last_date AS VARCHAR) AS last_date,
+                  dollar_vol_today,
+                  avg_dollar_vol10,
                    rel_vol10,
                    change1d,
-                   spark10
+                   price_history
             FROM ticker_metrics
             """
         ).fetchall()
@@ -70,21 +71,32 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
         avg_dollar_vol10,
         rel_vol10,
         change1d,
-        spark_json,
+        history_json,
     ) in rows:
         try:
-            spark_data = json.loads(spark_json) if spark_json else []
-        except json.JSONDecodeError:
-            spark_data = []
+            history_data = json.loads(history_json) if history_json else []
+        except (TypeError, json.JSONDecodeError):
+            history_data = []
 
-        parsed_entries: List[Dict[str, float]] = []
-        for entry in spark_data:
+        parsed_history: List[Dict[str, float]] = []
+        for entry in history_data:
             if not isinstance(entry, dict):
                 continue
-            date = entry.get("date")
-            change = entry.get("change")
-            if isinstance(date, str) and isinstance(change, (int, float)):
-                parsed_entries.append({"date": date, "change": float(change)})
+            date_val = entry.get("date")
+            close_val = entry.get("close")
+            volume_val = entry.get("volume")
+            dollar_val = entry.get("dollarVolume")
+            record: Dict[str, float] = {}
+            if isinstance(date_val, str):
+                record["date"] = date_val
+            if isinstance(close_val, (int, float)):
+                record["close"] = float(close_val)
+            if isinstance(volume_val, (int, float)):
+                record["volume"] = float(volume_val)
+            if isinstance(dollar_val, (int, float)):
+                record["dollarVolume"] = float(dollar_val)
+            if record:
+                parsed_history.append(record)
 
         metrics[symbol] = TickerMetric(
             symbol=symbol,
@@ -93,7 +105,7 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
             avg_dollar_vol10=_safe_float(avg_dollar_vol10),
             rel_vol10=_safe_float(rel_vol10),
             change1d=_safe_float(change1d),
-            spark_series=parsed_entries,
+            history=parsed_history,
         )
 
     try:
@@ -169,18 +181,6 @@ def _load_metrics_from_json() -> Tuple[Dict[str, TickerMetric], Set[str]]:
     for symbol, data in metrics_payload.items():
         if not isinstance(data, dict):
             continue
-        spark_raw = data.get("spark10") or []
-        parsed_entries: List[Dict[str, float]] = []
-        if isinstance(spark_raw, list):
-            for entry in spark_raw:
-                if (
-                    isinstance(entry, dict)
-                    and isinstance(entry.get("date"), str)
-                    and isinstance(entry.get("change"), (int, float))
-                ):
-                    parsed_entries.append(
-                        {"date": entry["date"], "change": float(entry["change"])}
-                    )
         metrics[symbol] = TickerMetric(
             symbol=symbol,
             last_date=data.get("last_date"),
@@ -188,7 +188,16 @@ def _load_metrics_from_json() -> Tuple[Dict[str, TickerMetric], Set[str]]:
             avg_dollar_vol10=_safe_float(data.get("avg_dollar_vol10")),
             rel_vol10=_safe_float(data.get("rel_vol10")),
             change1d=_safe_float(data.get("change1d")),
-            spark_series=parsed_entries,
+            history=[
+                {
+                    "date": str(item.get("date")),
+                    "close": _safe_float(item.get("close")),
+                    "volume": _safe_float(item.get("volume")),
+                    "dollarVolume": _safe_float(item.get("dollarVolume")),
+                }
+                for item in data.get("history", [])
+                if isinstance(item, dict)
+            ],
         )
     inactive_payload = payload.get("inactive_tickers")
     inactive_rows: List[tuple] = []
@@ -245,7 +254,6 @@ def aggregate_sectors(
                     name=sector.name,
                     members=active_members,
                     leaders=[],
-                    spark10=[],
                 )
             )
             continue
@@ -257,52 +265,94 @@ def aggregate_sectors(
         sum_avg10 = 0.0
         avg10_count = 0
         last_dates: List[str] = []
-        per_date_changes: Dict[str, List[float]] = {}
         leaders: List[TickerLeaderDTO] = []
 
-        for symbol in included_symbols:
-            metric = metrics[symbol]
+        members_detail: List[TickerMetricDTO] = []
+        five_day_changes: List[float] = []
 
-            if metric.rel_vol10 is not None:
-                rel_values.append(metric.rel_vol10)
-                leaders.append(
-                    TickerLeaderDTO(
+        for symbol in active_members:
+            metric = metrics.get(symbol)
+            if metric is None:
+                members_detail.append(
+                    TickerMetricDTO(
                         ticker=symbol,
-                        relVol10=metric.rel_vol10,
-                        change1d=metric.change1d,
+                        inactive=symbol in inactive_symbols,
                     )
                 )
-            else:
-                leaders.append(
-                    TickerLeaderDTO(
-                        ticker=symbol,
-                        relVol10=None,
-                        change1d=metric.change1d,
+                continue
+
+            metric_rel = metric.rel_vol10
+            metric_change = metric.change1d
+
+            if symbol in included_symbols:
+                if metric_rel is not None:
+                    rel_values.append(metric_rel)
+                    leaders.append(
+                        TickerLeaderDTO(
+                            ticker=symbol,
+                            relVol10=metric_rel,
+                            change1d=metric_change,
+                        )
                     )
+                else:
+                    leaders.append(
+                        TickerLeaderDTO(
+                            ticker=symbol,
+                            relVol10=None,
+                            change1d=metric_change,
+                        )
+                    )
+
+                if metric_change is not None:
+                    change_values.append(metric_change)
+
+                if metric.dollar_vol_today is not None:
+                    sum_today += metric.dollar_vol_today
+                    today_count += 1
+
+                if metric.avg_dollar_vol10 is not None:
+                    sum_avg10 += metric.avg_dollar_vol10
+                    avg10_count += 1
+
+                if metric.last_date:
+                    last_dates.append(metric.last_date)
+
+            history = metric.history
+            if history:
+                five_day = _compute_history_change(history, periods=5)
+                if five_day is not None:
+                    five_day_changes.append(five_day)
+
+            members_detail.append(
+                TickerMetricDTO(
+                    ticker=symbol,
+                    change1d=metric_change,
+                    relVol10=metric_rel,
+                    dollarVolToday=metric.dollar_vol_today,
+                    avgDollarVol10=metric.avg_dollar_vol10,
+                    lastUpdated=metric.last_date,
+                    inactive=False,
+                    history=[
+                        {
+                            "date": entry.get("date", ""),
+                            "close": entry.get("close"),
+                            "volume": entry.get("volume"),
+                            "dollarVolume": entry.get("dollarVolume"),
+                        }
+                        for entry in metric.history
+                    ],
                 )
+            )
 
-            if metric.change1d is not None:
-                change_values.append(metric.change1d)
-
-            if metric.dollar_vol_today is not None:
-                sum_today += metric.dollar_vol_today
-                today_count += 1
-
-            if metric.avg_dollar_vol10 is not None:
-                sum_avg10 += metric.avg_dollar_vol10
-                avg10_count += 1
-
-            if metric.last_date:
-                last_dates.append(metric.last_date)
-
-            for entry in metric.spark_series:
-                date_key = entry.get("date")
-                change_val = entry.get("change")
-                if (
-                    isinstance(date_key, str)
-                    and isinstance(change_val, (int, float))
-                ):
-                    per_date_changes.setdefault(date_key, []).append(float(change_val))
+        # Include any members that were excluded due to inactivity or missing data
+        missing_members = [sym for sym in members if sym not in active_members]
+        for symbol in missing_members:
+            members_detail.append(
+                TickerMetricDTO(
+                    ticker=symbol,
+                    inactive=True,
+                )
+            )
 
         leaders = [
             leader
@@ -314,14 +364,6 @@ def aggregate_sectors(
 
         rel_median = _safe_median(rel_values)
         change_median = _safe_median(change_values)
-
-        dates_sorted = sorted(per_date_changes.keys())
-        spark10_values: List[float] = []
-        for date_key in dates_sorted[-10:]:
-            values = per_date_changes.get(date_key, [])
-            if values:
-                spark10_values.append(float(median(values)))
-
         results.append(
             SectorVolumeDTO(
                 id=sector.id,
@@ -332,8 +374,8 @@ def aggregate_sectors(
                 avgDollarVol10_sum=sum_avg10 if avg10_count else None,
                 change1d_median=change_median,
                 leaders=leaders,
-                spark10=spark10_values,
                 lastUpdated=max(last_dates) if last_dates else None,
+                members_detail=members_detail,
             )
         )
 
@@ -345,6 +387,23 @@ def _safe_median(values: List[float]) -> Optional[float]:
     if not clean:
         return None
     return float(median(clean))
+
+
+def _compute_history_change(history: List[Dict[str, float]], periods: int) -> Optional[float]:
+    if periods <= 0 or not history:
+        return None
+    closes: List[float] = []
+    for entry in history:
+        close = entry.get("close")
+        if isinstance(close, (int, float)) and not isinstance(close, bool):
+            closes.append(float(close))
+    if len(closes) <= periods:
+        return None
+    start = closes[-periods - 1]
+    end = closes[-1]
+    if start == 0:
+        return None
+    return ((end / start) - 1.0) * 100.0
 
 
 __all__ = [

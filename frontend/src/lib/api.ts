@@ -201,17 +201,6 @@ export async function fetchVIX(): Promise<VixResponse> {
   return getJSON<VixResponse>(`/metrics/vix`);
 }
 
-export async function fetchOhlcSeries(
-  symbol: string,
-  options: { period?: string; interval?: string } = {}
-): Promise<OhlcPoint[]> {
-  const period = options.period ?? "1mo";
-  const interval = options.interval ?? "1d";
-  const encodedSymbol = encodeURIComponent(symbol);
-  const query = `period=${encodeURIComponent(period)}&interval=${encodeURIComponent(interval)}`;
-  return getJSON<OhlcPoint[]>(`/stock/${encodedSymbol}?${query}`);
-}
-
 // -------- Sector volume aggregator (server-side) --------
 export interface SectorIn {
   id: string;
@@ -225,6 +214,22 @@ export interface TickerLeaderDTO {
   change1d: number | null;
 }
 
+export interface TickerMetricDTO {
+  ticker: string;
+  change1d: number | null;
+  relVol10: number | null;
+  dollarVolToday: number | null;
+  avgDollarVol10: number | null;
+  lastUpdated: string | null;
+  inactive: boolean;
+  history: Array<{
+    date: string;
+    close: number | null;
+    volume: number | null;
+    dollarVolume: number | null;
+  }>;
+}
+
 export interface SectorVolumeDTO {
   id: string;
   name: string;
@@ -234,8 +239,8 @@ export interface SectorVolumeDTO {
   avgDollarVol10_sum: number | null;
   change1d_median: number | null;
   leaders: TickerLeaderDTO[];
-  spark10: number[];
   lastUpdated: string | null;
+  members_detail: TickerMetricDTO[];
 }
 
 export interface SnapshotHealthSummary {
@@ -246,53 +251,16 @@ export interface SnapshotHealthSummary {
   stale: boolean;
 }
 
-export async function fetchSectorVolumeAggregate(sectors: SectorIn[]): Promise<SectorVolumeDTO[]> {
-  const payload = encodeURIComponent(JSON.stringify({ sectors }));
-  return getJSON<SectorVolumeDTO[]>(`/metrics/sectors/volume?payload=${payload}`);
+export async function fetchSectorVolumeAggregate(sectors?: SectorIn[]): Promise<SectorVolumeDTO[]> {
+  if (sectors && sectors.length) {
+    const payload = encodeURIComponent(JSON.stringify({ sectors }));
+    return getJSON<SectorVolumeDTO[]>(`/metrics/sectors/volume?payload=${payload}`);
+  }
+  return getJSON<SectorVolumeDTO[]>(`/metrics/sectors/volume`);
 }
 
 export async function fetchSnapshotHealth(): Promise<SnapshotHealthSummary> {
   return getJSON<SnapshotHealthSummary>(`/health/snapshot`);
-}
-
-const TREND_LITE_BATCH_SIZE = 40;
-
-function chunkSymbols(symbols: string[], size: number): string[][] {
-  const chunks: string[][] = [];
-  for (let i = 0; i < symbols.length; i += size) {
-    chunks.push(symbols.slice(i, i + size));
-  }
-  return chunks;
-}
-
-export async function fetchTrendLiteBulk(symbols: string[]): Promise<Record<string, TrendLiteResponse>> {
-  if (!symbols.length) {
-    return {};
-  }
-  const unique: string[] = [];
-  const seen = new Set<string>();
-  symbols.forEach((sym) => {
-    const upper = sym.trim().toUpperCase();
-    if (!upper || seen.has(upper)) {
-      return;
-    }
-    seen.add(upper);
-    unique.push(upper);
-  });
-
-  const chunks = chunkSymbols(unique, TREND_LITE_BATCH_SIZE);
-  const responses = await Promise.all(
-    chunks.map((chunk) => {
-      const param = encodeURIComponent(chunk.join(","));
-      return getJSON<TrendLiteResponse[]>(`/metrics/trend/lite?symbols=${param}`);
-    })
-  );
-
-  const merged: Record<string, TrendLiteResponse> = {};
-  responses.flat().forEach((entry) => {
-    merged[entry.symbol] = entry;
-  });
-  return merged;
 }
 
 // Breadth endpoints removed - not needed

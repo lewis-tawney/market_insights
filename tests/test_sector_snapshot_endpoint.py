@@ -37,7 +37,6 @@ def snapshot_context(tmp_path, monkeypatch) -> Dict[str, Any]:
                     {"ticker": "AAA", "relVol10": 1.5, "change1d": 2.0},
                     {"ticker": "BBB", "relVol10": 1.2, "change1d": -0.5},
                 ],
-                "spark10": [0.1, -0.05, 0.2],
                 "lastUpdated": "2024-01-05",
             }
         ],
@@ -48,10 +47,10 @@ def snapshot_context(tmp_path, monkeypatch) -> Dict[str, Any]:
                 "avg_dollar_vol10": 600000.0,
                 "rel_vol10": 1.5,
                 "change1d": 2.0,
-                "spark10": [
-                    {"date": "2024-01-03", "change": 0.4},
-                    {"date": "2024-01-04", "change": -0.1},
-                    {"date": "2024-01-05", "change": 2.0},
+                "history": [
+                    {"date": "2024-01-03", "close": 98.0, "volume": 1000000, "dollarVolume": 98000000},
+                    {"date": "2024-01-04", "close": 97.5, "volume": 1100000, "dollarVolume": 107250000},
+                    {"date": "2024-01-05", "close": 99.5, "volume": 905000, "dollarVolume": 90000000},
                 ],
             },
             "BBB": {
@@ -60,10 +59,10 @@ def snapshot_context(tmp_path, monkeypatch) -> Dict[str, Any]:
                 "avg_dollar_vol10": 600000.0,
                 "rel_vol10": 1.0,
                 "change1d": -0.5,
-                "spark10": [
-                    {"date": "2024-01-03", "change": 0.2},
-                    {"date": "2024-01-04", "change": -0.3},
-                    {"date": "2024-01-05", "change": -0.5},
+                "history": [
+                    {"date": "2024-01-03", "close": 45.0, "volume": 500000, "dollarVolume": 22500000},
+                    {"date": "2024-01-04", "close": 44.0, "volume": 520000, "dollarVolume": 22880000},
+                    {"date": "2024-01-05", "close": 43.8, "volume": 540000, "dollarVolume": 23652000},
                 ],
             },
         },
