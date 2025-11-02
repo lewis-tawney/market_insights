@@ -122,6 +122,8 @@ async def test_sectors_volume_returns_snapshot_with_headers(snapshot_client, sna
         assert isinstance(payload, list)
         assert payload
         assert payload[0]["id"] == snapshot_context["payload"]["sectors"][0]["id"]
+        assert "change1d_weighted" in payload[0]
+        assert "change5d_weighted" in payload[0] or payload[0].get("change5d_weighted") is None
         assert resp.headers.get("X-RateLimit-Limit") == "5"
         remaining = resp.headers.get("X-RateLimit-Remaining")
         assert remaining is not None

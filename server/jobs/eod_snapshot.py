@@ -60,7 +60,8 @@ def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
             avg_dollar_vol10 DOUBLE,
             rel_vol10 DOUBLE,
             change1d DOUBLE,
-            spark10 TEXT,
+            change5d DOUBLE,
+            dollar_vol5d DOUBLE,
             price_history TEXT,
             updated_at TIMESTAMP
         )
@@ -68,6 +69,14 @@ def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
     )
     try:
         conn.execute("ALTER TABLE ticker_metrics ADD COLUMN price_history TEXT")
+    except duckdb.Error:
+        pass
+    try:
+        conn.execute("ALTER TABLE ticker_metrics ADD COLUMN change5d DOUBLE")
+    except duckdb.Error:
+        pass
+    try:
+        conn.execute("ALTER TABLE ticker_metrics ADD COLUMN dollar_vol5d DOUBLE")
     except duckdb.Error:
         pass
     conn.execute(
@@ -319,6 +328,16 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
 
     dollar_vol_today = dollar_vols[-1]
 
+    change5d = None
+    if len(closes) >= 6:
+        base = closes[-6]
+        if base:
+            change5d = ((closes[-1] / base) - 1.0) * 100.0
+
+    dollar_vol5d = None
+    if len(dollar_vols) >= 5:
+        dollar_vol5d = sum(dollar_vols[-5:])
+
     if len(closes) < 2:
         return None
 
@@ -350,6 +369,8 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
         avg_dollar_vol10=avg_dollar_vol10,
         rel_vol10=rel_vol10,
         change1d=change1d,
+        change5d=change5d,
+        dollar_vol5d=dollar_vol5d,
         history=history_entries,
     )
 
@@ -367,11 +388,12 @@ def upsert_ticker_metrics(
                 avg_dollar_vol10,
                 rel_vol10,
                 change1d,
-                spark10,
+                change5d,
+                dollar_vol5d,
                 price_history,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             (
                 metric.symbol,
@@ -380,7 +402,8 @@ def upsert_ticker_metrics(
                 metric.avg_dollar_vol10,
                 metric.rel_vol10,
                 metric.change1d,
-                None,
+                metric.change5d,
+                metric.dollar_vol5d,
                 json.dumps(metric.history),
             ),
         )
@@ -395,9 +418,39 @@ def serialize_metrics(metrics: Dict[str, TickerMetric]) -> Dict[str, Dict[str, o
             "avg_dollar_vol10": metric.avg_dollar_vol10,
             "rel_vol10": metric.rel_vol10,
             "change1d": metric.change1d,
+            "change5d": metric.change5d,
+            "dollar_vol5d": metric.dollar_vol5d,
             "history": metric.history,
         }
     return serialized
+
+
+def resolve_snapshot_date(metrics: Dict[str, TickerMetric]) -> date:
+    latest: Optional[date] = None
+    for metric in metrics.values():
+        last_date_str = metric.last_date
+        if not last_date_str:
+            continue
+        current: Optional[date] = None
+        try:
+            current = date.fromisoformat(last_date_str)
+        except ValueError:
+            try:
+                current = datetime.fromisoformat(last_date_str).date()
+            except ValueError:
+                logger.warning(
+                    "Unable to parse last_date '%s' for %s; skipping",
+                    last_date_str,
+                    metric.symbol,
+                )
+        if current and (latest is None or current > latest):
+            latest = current
+    if latest is None:
+        logger.warning(
+            "Falling back to today's date for snapshot; no valid last trading date found."
+        )
+        return date.today()
+    return latest
 
 
 async def build_snapshot() -> None:
@@ -474,7 +527,7 @@ async def build_snapshot() -> None:
     failure_state = load_failure_state(conn)
     inactive_symbols = determine_inactive(failure_state)
 
-    snapshot_date = date.today()
+    snapshot_date = resolve_snapshot_date(metrics)
     generated_at = datetime.now(tz=timezone.utc)
 
     if base_sectors:

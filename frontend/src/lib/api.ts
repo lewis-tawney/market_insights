@@ -238,6 +238,7 @@ export interface SectorVolumeDTO {
   dollarVol_today_sum: number | null;
   avgDollarVol10_sum: number | null;
   change1d_median: number | null;
+  change1d_weighted: number | null;
   leaders: TickerLeaderDTO[];
   lastUpdated: string | null;
   members_detail: TickerMetricDTO[];

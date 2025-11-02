@@ -38,6 +38,8 @@ class TickerMetric:
     avg_dollar_vol10: Optional[float]
     rel_vol10: Optional[float]
     change1d: Optional[float]
+    change5d: Optional[float]
+    dollar_vol5d: Optional[float]
     history: List[Dict[str, float]]
 
 
@@ -49,12 +51,14 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
     try:
         rows = conn.execute(
             """
-           SELECT symbol,
-                  CAST(last_date AS VARCHAR) AS last_date,
-                  dollar_vol_today,
-                  avg_dollar_vol10,
+            SELECT symbol,
+                   CAST(last_date AS VARCHAR) AS last_date,
+                   dollar_vol_today,
+                   avg_dollar_vol10,
                    rel_vol10,
                    change1d,
+                   change5d,
+                   dollar_vol5d,
                    price_history
             FROM ticker_metrics
             """
@@ -71,6 +75,8 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
         avg_dollar_vol10,
         rel_vol10,
         change1d,
+        change5d,
+        dollar_vol5d,
         history_json,
     ) in rows:
         try:
@@ -105,6 +111,8 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
             avg_dollar_vol10=_safe_float(avg_dollar_vol10),
             rel_vol10=_safe_float(rel_vol10),
             change1d=_safe_float(change1d),
+            change5d=_safe_float(change5d),
+            dollar_vol5d=_safe_float(dollar_vol5d),
             history=parsed_history,
         )
 
@@ -188,6 +196,8 @@ def _load_metrics_from_json() -> Tuple[Dict[str, TickerMetric], Set[str]]:
             avg_dollar_vol10=_safe_float(data.get("avg_dollar_vol10")),
             rel_vol10=_safe_float(data.get("rel_vol10")),
             change1d=_safe_float(data.get("change1d")),
+            change5d=_safe_float(data.get("change5d")),
+            dollar_vol5d=_safe_float(data.get("dollar_vol5d")),
             history=[
                 {
                     "date": str(item.get("date")),
@@ -268,7 +278,10 @@ def aggregate_sectors(
         leaders: List[TickerLeaderDTO] = []
 
         members_detail: List[TickerMetricDTO] = []
-        five_day_changes: List[float] = []
+        weighted_sum = 0.0
+        weighted_total = 0.0
+        weighted_sum_5d = 0.0
+        weighted_total_5d = 0.0
 
         for symbol in active_members:
             metric = metrics.get(symbol)
@@ -305,6 +318,9 @@ def aggregate_sectors(
 
                 if metric_change is not None:
                     change_values.append(metric_change)
+                    if metric.dollar_vol_today is not None and metric.dollar_vol_today > 0:
+                        weighted_sum += metric_change * metric.dollar_vol_today
+                        weighted_total += metric.dollar_vol_today
 
                 if metric.dollar_vol_today is not None:
                     sum_today += metric.dollar_vol_today
@@ -317,20 +333,32 @@ def aggregate_sectors(
                 if metric.last_date:
                     last_dates.append(metric.last_date)
 
-            history = metric.history
-            if history:
-                five_day = _compute_history_change(history, periods=5)
-                if five_day is not None:
-                    five_day_changes.append(five_day)
+            metric_change5d = metric.change5d
+            if metric_change5d is None:
+                metric_change5d = _compute_price_change(metric.history, periods=5)
+
+            metric_dollar_vol5d = metric.dollar_vol5d
+            if metric_dollar_vol5d is None:
+                metric_dollar_vol5d = _compute_dollar_volume(metric.history, window=5)
+
+            if (
+                metric_change5d is not None
+                and metric_dollar_vol5d is not None
+                and metric_dollar_vol5d > 0
+            ):
+                weighted_sum_5d += metric_change5d * metric_dollar_vol5d
+                weighted_total_5d += metric_dollar_vol5d
 
             members_detail.append(
                 TickerMetricDTO(
                     ticker=symbol,
                     change1d=metric_change,
+                    change5d=metric_change5d,
                     relVol10=metric_rel,
                     dollarVolToday=metric.dollar_vol_today,
                     avgDollarVol10=metric.avg_dollar_vol10,
                     lastUpdated=metric.last_date,
+                    dollarVol5d=metric_dollar_vol5d,
                     inactive=False,
                     history=[
                         {
@@ -364,6 +392,8 @@ def aggregate_sectors(
 
         rel_median = _safe_median(rel_values)
         change_median = _safe_median(change_values)
+        change_weighted = (weighted_sum / weighted_total) if weighted_total else None
+        change5d_weighted = (weighted_sum_5d / weighted_total_5d) if weighted_total_5d else None
         results.append(
             SectorVolumeDTO(
                 id=sector.id,
@@ -373,6 +403,8 @@ def aggregate_sectors(
                 dollarVol_today_sum=sum_today if today_count else None,
                 avgDollarVol10_sum=sum_avg10 if avg10_count else None,
                 change1d_median=change_median,
+                change1d_weighted=change_weighted,
+                change5d_weighted=change5d_weighted,
                 leaders=leaders,
                 lastUpdated=max(last_dates) if last_dates else None,
                 members_detail=members_detail,
@@ -389,21 +421,34 @@ def _safe_median(values: List[float]) -> Optional[float]:
     return float(median(clean))
 
 
-def _compute_history_change(history: List[Dict[str, float]], periods: int) -> Optional[float]:
+def _compute_price_change(history: List[Dict[str, float]], periods: int) -> Optional[float]:
     if periods <= 0 or not history:
         return None
-    closes: List[float] = []
-    for entry in history:
-        close = entry.get("close")
-        if isinstance(close, (int, float)) and not isinstance(close, bool):
-            closes.append(float(close))
+    closes = [
+        float(entry.get("close"))
+        for entry in history
+        if isinstance(entry, dict) and isinstance(entry.get("close"), (int, float))
+    ]
     if len(closes) <= periods:
         return None
-    start = closes[-periods - 1]
-    end = closes[-1]
-    if start == 0:
+    base = closes[-periods - 1]
+    latest = closes[-1]
+    if base == 0:
         return None
-    return ((end / start) - 1.0) * 100.0
+    return ((latest / base) - 1.0) * 100.0
+
+
+def _compute_dollar_volume(history: List[Dict[str, float]], window: int) -> Optional[float]:
+    if window <= 0 or not history:
+        return None
+    dollar_volumes = [
+        float(entry.get("dollarVolume"))
+        for entry in history
+        if isinstance(entry, dict) and isinstance(entry.get("dollarVolume"), (int, float))
+    ]
+    if len(dollar_volumes) < window:
+        return None
+    return sum(dollar_volumes[-window:])
 
 
 __all__ = [

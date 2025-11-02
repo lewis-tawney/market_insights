@@ -25,6 +25,20 @@ security:
   read_api_token: ""
   frontend_origin: "http://localhost:5173"
 
+providers:
+  polygon:
+    api_key: ${POLYGON_API_KEY}
+    base_url: "https://api.polygon.io"
+
+database:
+  postgres:
+    host: localhost
+    port: 5432
+    database: market_insights
+    user: market_insights
+    password: ${POSTGRES_PASSWORD}
+    sslmode: prefer
+
 modes:
   default:
     compass:

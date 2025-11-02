@@ -27,10 +27,12 @@ class DailyMetricDTO(BaseModel):
 class TickerMetricDTO(BaseModel):
     ticker: str
     change1d: Optional[float] = None
+    change5d: Optional[float] = None
     relVol10: Optional[float] = None
     dollarVolToday: Optional[float] = None
     avgDollarVol10: Optional[float] = None
     lastUpdated: Optional[str] = None
+    dollarVol5d: Optional[float] = None
     inactive: bool = False
     history: List[DailyMetricDTO] = Field(default_factory=list)
 
@@ -43,6 +45,7 @@ class SectorVolumeDTO(BaseModel):
     dollarVol_today_sum: Optional[float] = None
     avgDollarVol10_sum: Optional[float] = None
     change1d_median: Optional[float] = None
+    change1d_weighted: Optional[float] = None
     leaders: List[TickerLeaderDTO] = Field(default_factory=list)
     lastUpdated: Optional[str] = None
     members_detail: List[TickerMetricDTO] = Field(default_factory=list)

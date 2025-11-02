@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchSectorVolumeAggregate,
   fetchSnapshotHealth,
+  type SectorIn,
   type SectorVolumeDTO,
   type SnapshotHealthSummary,
   type TickerMetricDTO,
@@ -28,6 +29,88 @@ type DecoratedSector = SectorVolumeDTO & {
 type DecoratedTicker = TickerMetricDTO & {
   change5d: number | null;
 };
+
+const SECTOR_STORAGE_KEY = "market-insights:sector-definitions";
+const TICKER_PATTERN = /^[A-Z0-9.\-]{1,10}$/;
+
+function normalizeTickerInput(value: string): string {
+  return value.replace(/\s+/g, "").toUpperCase();
+}
+
+function loadStoredSectorDefinitions(): SectorIn[] | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SECTOR_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    const sanitized = parsed
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return null;
+        }
+
+        const { id, name, tickers } = entry as {
+          id?: unknown;
+          name?: unknown;
+          tickers?: unknown;
+        };
+
+        if (typeof id !== "string" || typeof name !== "string") {
+          return null;
+        }
+
+        const cleaned = Array.isArray(tickers)
+          ? Array.from(
+              new Set(
+                tickers
+                  .map((ticker) =>
+                    typeof ticker === "string" ? normalizeTickerInput(ticker) : null
+                  )
+                  .filter((ticker): ticker is string => Boolean(ticker))
+              )
+            )
+          : [];
+
+        return {
+          id,
+          name,
+          tickers: cleaned,
+        } satisfies SectorIn;
+      })
+      .filter((sector): sector is SectorIn => sector !== null);
+
+    return sanitized.length ? sanitized : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistSectorDefinitions(definitions: SectorIn[] | null): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    if (!definitions || !definitions.length) {
+      window.localStorage.removeItem(SECTOR_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(SECTOR_STORAGE_KEY, JSON.stringify(definitions));
+  } catch {
+    // Ignore storage failures (e.g., Safari private mode)
+  }
+}
 
 function formatPercent(value: number | null, digits = 2): { text: string; tone: string } {
   if (value === null || Number.isNaN(value)) {
@@ -110,6 +193,9 @@ function computeTickerFiveDayChange(history: TickerMetricDTO["history"]): number
 }
 
 function tickerFiveDayChange(metric: TickerMetricDTO): number | null {
+  if (typeof metric.change5d === "number" && Number.isFinite(metric.change5d)) {
+    return metric.change5d;
+  }
   return computeTickerFiveDayChange(metric.history);
 }
 
@@ -150,31 +236,71 @@ function SectorWatchlist(): React.ReactElement {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [sectorDefinitions, setSectorDefinitions] = useState<SectorIn[] | null>(
+    () => loadStoredSectorDefinitions()
+  );
+  const definitionsRef = useRef<SectorIn[] | null>(sectorDefinitions);
+  const latestRequestRef = useRef<symbol | null>(null);
   const [snapshotMeta, setSnapshotMeta] = useState<SnapshotHealthSummary | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [filterTerm, setFilterTerm] = useState("");
   const [sortPreset, setSortPreset] = useState<SortPreset>({ key: "oneDayChange", direction: "desc" });
   const [selectedSectorId, setSelectedSectorId] = useState<string | null>(null);
   const [tickerSort, setTickerSort] = useState<TickerSortPreset>({ key: "change1d", direction: "desc" });
+  const [isEditing, setIsEditing] = useState(false);
+  const [newTickerInput, setNewTickerInput] = useState("");
+  const [mutationError, setMutationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    definitionsRef.current = sectorDefinitions;
+    persistSectorDefinitions(sectorDefinitions);
+  }, [sectorDefinitions]);
+
+  useEffect(() => {
+    setNewTickerInput("");
+    setMutationError(null);
+    setIsEditing(false);
+  }, [selectedSectorId]);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setNewTickerInput("");
+      setMutationError(null);
+    }
+  }, [isEditing]);
 
   useEffect(() => {
     let alive = true;
+    const requestMarker = Symbol("sector-fetch");
+    latestRequestRef.current = requestMarker;
     setLoading(true);
     setError(null);
     (async () => {
       try {
-        const response = await fetchSectorVolumeAggregate();
-        if (!alive) {
+        const definitions = definitionsRef.current;
+        const response = await fetchSectorVolumeAggregate(
+          definitions && definitions.length ? definitions : undefined
+        );
+        if (!alive || latestRequestRef.current !== requestMarker) {
           return;
         }
         const mapped: DecoratedSector[] = response.map((sector) => ({
           ...sector,
-          fiveDayChange: computeSectorFiveDayChange(sector.members_detail),
+          fiveDayChange:
+            typeof sector.change5d_weighted === "number" && Number.isFinite(sector.change5d_weighted)
+              ? sector.change5d_weighted
+              : computeSectorFiveDayChange(sector.members_detail),
+        }));
+        const normalizedDefinitions: SectorIn[] = response.map((sector) => ({
+          id: sector.id,
+          name: sector.name,
+          tickers: [...sector.members],
         }));
         setSectors(mapped);
+        setSectorDefinitions(normalizedDefinitions);
         setError(null);
       } catch (err: any) {
-        if (!alive) {
+        if (!alive || latestRequestRef.current !== requestMarker) {
           return;
         }
         const message =
@@ -184,7 +310,7 @@ function SectorWatchlist(): React.ReactElement {
         setError(message);
         setSectors([]);
       } finally {
-        if (alive) {
+        if (alive && latestRequestRef.current === requestMarker) {
           setLoading(false);
         }
       }
@@ -232,8 +358,10 @@ function SectorWatchlist(): React.ReactElement {
       return;
     }
     const sorted = [...sectors].sort((a, b) => {
-      const aVal = typeof a.change1d_median === "number" ? a.change1d_median : Number.NEGATIVE_INFINITY;
-      const bVal = typeof b.change1d_median === "number" ? b.change1d_median : Number.NEGATIVE_INFINITY;
+      const aBase = a.change1d_weighted ?? a.change1d_median;
+      const bBase = b.change1d_weighted ?? b.change1d_median;
+      const aVal = typeof aBase === "number" ? aBase : Number.NEGATIVE_INFINITY;
+      const bVal = typeof bBase === "number" ? bBase : Number.NEGATIVE_INFINITY;
       if (aVal === bVal) {
         return a.name.localeCompare(b.name);
       }
@@ -264,7 +392,7 @@ function SectorWatchlist(): React.ReactElement {
           return sector.relVol10_median;
         case "oneDayChange":
         default:
-          return sector.change1d_median;
+          return sector.change1d_weighted ?? sector.change1d_median;
       }
     };
     const directionFactor = sortPreset.direction === "asc" ? 1 : -1;
@@ -293,6 +421,13 @@ function SectorWatchlist(): React.ReactElement {
     }
     return sortedSectors.find((sector) => sector.id === selectedSectorId) ?? null;
   }, [sortedSectors, selectedSectorId]);
+
+  const selectedSectorDefinition = useMemo(() => {
+    if (!selectedSectorId || !sectorDefinitions) {
+      return null;
+    }
+    return sectorDefinitions.find((sector) => sector.id === selectedSectorId) ?? null;
+  }, [sectorDefinitions, selectedSectorId]);
 
   const selectedTickers: DecoratedTicker[] = useMemo(() => {
     if (!selectedSector) {
@@ -370,6 +505,111 @@ function SectorWatchlist(): React.ReactElement {
     setRefreshKey((value) => value + 1);
   };
 
+  const toggleEditing = () => {
+    if (!selectedSector || !sectorDefinitions) {
+      return;
+    }
+    setIsEditing((value) => !value);
+  };
+
+  const handleTickerInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const next = normalizeTickerInput(event.target.value).slice(0, 10);
+    setNewTickerInput(next);
+    if (mutationError) {
+      setMutationError(null);
+    }
+  };
+
+  const handleAddTickerSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!isEditing) {
+      return;
+    }
+
+    if (loading) {
+      setMutationError("Please wait for the latest snapshot to finish loading.");
+      return;
+    }
+
+    if (!sectorDefinitions || !selectedSectorDefinition) {
+      setMutationError("Select a sector to add tickers.");
+      return;
+    }
+
+    const normalized = normalizeTickerInput(newTickerInput).slice(0, 10);
+    if (!normalized) {
+      setMutationError("Enter a ticker symbol.");
+      return;
+    }
+
+    if (!TICKER_PATTERN.test(normalized)) {
+      setMutationError("Use letters, numbers, '.' or '-' (max 10 chars).");
+      return;
+    }
+
+    const sector = sectorDefinitions.find((item) => item.id === selectedSectorDefinition.id);
+    if (!sector) {
+      setMutationError("Unable to locate the selected sector definition.");
+      return;
+    }
+
+    if (sector.tickers.some((ticker) => ticker.toUpperCase() === normalized)) {
+      setMutationError(`${normalized} already tracked in ${sector.name}.`);
+      return;
+    }
+
+    const updated = sectorDefinitions.map((item) => {
+      if (item.id !== sector.id) {
+        return item;
+      }
+      return {
+        ...item,
+        tickers: [...item.tickers, normalized],
+      };
+    });
+
+    setMutationError(null);
+    setNewTickerInput("");
+    setSectorDefinitions(updated);
+    setRefreshKey((value) => value + 1);
+  };
+
+  const handleRemoveTicker = (tickerSymbol: string) => {
+    if (!isEditing || loading || !sectorDefinitions || !selectedSectorDefinition) {
+      return;
+    }
+
+    const normalized = normalizeTickerInput(tickerSymbol);
+    if (!normalized) {
+      return;
+    }
+
+    const sector = sectorDefinitions.find((item) => item.id === selectedSectorDefinition.id);
+    if (!sector) {
+      return;
+    }
+
+    const filtered = sector.tickers.filter((ticker) => ticker.toUpperCase() !== normalized);
+    if (filtered.length === sector.tickers.length) {
+      return;
+    }
+
+    const updated = sectorDefinitions.map((item) => {
+      if (item.id !== sector.id) {
+        return item;
+      }
+      return {
+        ...item,
+        tickers: filtered,
+      };
+    });
+
+    setMutationError(null);
+    setSectorDefinitions(updated);
+    setRefreshKey((value) => value + 1);
+  };
+
   const renderSortableHeader = (label: string, key: SortKey, align: "left" | "right" = "right") => {
     const active = sortPreset.key === key;
     const direction = active ? sortPreset.direction : "desc";
@@ -413,7 +653,7 @@ function SectorWatchlist(): React.ReactElement {
       return null;
     }
     return {
-      oneDay: formatPercent(selectedSector.change1d_median, 2),
+      oneDay: formatPercent(selectedSector.change1d_weighted ?? selectedSector.change1d_median, 2),
       fiveDay: formatPercent(selectedSector.fiveDayChange, 2),
       relVol10: formatRelativeVolume(selectedSector.relVol10_median),
     };
@@ -505,14 +745,15 @@ function SectorWatchlist(): React.ReactElement {
               <tbody className="divide-y divide-gray-800 bg-[#1E2937]">
                 {sortedSectors.map((sector) => {
                   const isSelected = selectedSectorId === sector.id;
-                  const oneDay = formatPercent(sector.change1d_median, 2);
+                  const oneDayBase = sector.change1d_weighted ?? sector.change1d_median;
+                  const oneDay = formatPercent(oneDayBase, 2);
                   const fiveDay = formatPercent(sector.fiveDayChange, 2);
                   const relVol = formatRelativeVolume(sector.relVol10_median);
                   return (
                     <tr
                       key={sector.id}
                       className={`cursor-pointer transition ${
-                        isSelected ? "bg-[#24344A] ring-1 ring-emerald-400/30" : "bg-[#1E2937] hover:bg-[#26374D]"
+                        isSelected ? "bg-[#24344A]" : "bg-[#1E2937] hover:bg-[#26374D]"
                       }`}
                       onClick={() => setSelectedSectorId(sector.id)}
                     >
@@ -535,8 +776,8 @@ function SectorWatchlist(): React.ReactElement {
           </div>
 
           <div className="rounded-xl border border-gray-800 bg-[#1E2937] p-4 shadow space-y-4">
-            <div>
-              <div className="flex items-center justify-between gap-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="space-y-1">
                 <h4 className="text-sm font-semibold text-gray-100">
                   {selectedSector ? selectedSector.name : "Select a sector"}
                 </h4>
@@ -544,97 +785,155 @@ function SectorWatchlist(): React.ReactElement {
                   {selectedSector ? `${selectedSector.members.length} tickers` : ""}
                 </span>
               </div>
-              {sectorSummary ? (
-                <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-400">
-                  <span className="flex items-center gap-1">
-                    1D{" "}
-                    <span className={`font-mono ${sectorSummary.oneDay.tone}`}>
-                      {sectorSummary.oneDay.text}
-                    </span>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    5D{" "}
-                    <span className={`font-mono ${sectorSummary.fiveDay.tone}`}>
-                      {sectorSummary.fiveDay.text}
-                    </span>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    RelVol10{" "}
-                    <span className="font-mono text-gray-200">{sectorSummary.relVol10}</span>
-                  </span>
-                </div>
-              ) : (
-                <p className="mt-2 text-xs text-gray-500">
-                  Choose a sector to see its members and snapshot metrics.
-                </p>
-              )}
+              {selectedSector ? (
+                <button
+                  type="button"
+                  onClick={toggleEditing}
+                  disabled={!selectedSectorDefinition || loading}
+                  aria-pressed={isEditing}
+                  className={`rounded-md border px-2 py-1 text-xs font-semibold transition ${
+                    isEditing
+                      ? "border-emerald-400 text-emerald-200 hover:border-emerald-300 hover:text-white"
+                      : "border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-100"
+                  } disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500`}
+                >
+                  {isEditing ? "Done" : "Edit"}
+                </button>
+              ) : null}
             </div>
+            {sectorSummary ? (
+              <div className="flex flex-wrap gap-3 text-xs text-gray-400">
+                <span className="flex items-center gap-1">
+                  1D{" "}
+                  <span className={`font-mono ${sectorSummary.oneDay.tone}`}>
+                    {sectorSummary.oneDay.text}
+                  </span>
+                </span>
+                <span className="flex items-center gap-1">
+                  5D{" "}
+                  <span className={`font-mono ${sectorSummary.fiveDay.tone}`}>
+                    {sectorSummary.fiveDay.text}
+                  </span>
+                </span>
+                <span className="flex items-center gap-1">
+                  RelVol10{" "}
+                  <span className="font-mono text-gray-200">{sectorSummary.relVol10}</span>
+                </span>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500">
+                Choose a sector to see its members and snapshot metrics.
+              </p>
+            )}
 
             {selectedSector ? (
-              selectedTickers.length ? (
-                <div className="rounded-lg border border-gray-800 bg-[#1E2937] shadow-inner">
-                  <table className="min-w-full divide-y divide-gray-800">
-                    <thead className="bg-[#24344A] text-[11px] uppercase tracking-wide text-gray-300">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-semibold">
-                          {renderTickerSortableHeader("Ticker", "ticker", "left")}
-                        </th>
-                        <th className="px-3 py-2 text-right font-semibold">
-                          {renderTickerSortableHeader("1D%", "change1d")}
-                        </th>
-                        <th className="px-3 py-2 text-right font-semibold">
-                          {renderTickerSortableHeader("5D%", "change5d")}
-                        </th>
-                        <th className="px-3 py-2 text-right font-semibold">
-                          {renderTickerSortableHeader("RelVol10", "relVol10")}
-                        </th>
-                        <th className="px-3 py-2 text-right font-semibold">
-                          {renderTickerSortableHeader("$Vol Today", "dollarVolToday")}
-                        </th>
-                        <th className="px-3 py-2 text-right font-semibold">
-                          {renderTickerSortableHeader("Avg $Vol10", "avgDollarVol10")}
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-800 bg-[#1E2937]">
-                      {sortedTickers.map((ticker) => {
-                        const change1d = formatPercent(ticker.change1d, 2);
-                        const change5d = formatPercent(ticker.change5d, 2);
-                        const relVol = formatRelativeVolume(ticker.relVol10);
-                        return (
-                          <tr key={ticker.ticker} className="bg-[#24344A] hover:bg-[#2a3d54]">
-                            <td className="px-3 py-2 font-mono text-sm text-gray-100">
-                              {ticker.ticker}
-                              {ticker.inactive ? (
-                                <span className="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-200">
-                                  inactive
-                                </span>
+              <div className="space-y-3">
+                {selectedTickers.length ? (
+                  <div className="rounded-lg border border-gray-800 bg-[#1E2937] shadow-inner">
+                    <table className="min-w-full divide-y divide-gray-800">
+                      <thead className="bg-[#24344A] text-[11px] uppercase tracking-wide text-gray-300">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-semibold">
+                            {renderTickerSortableHeader("Ticker", "ticker", "left")}
+                          </th>
+                          <th className="px-3 py-2 text-right font-semibold">
+                            {renderTickerSortableHeader("1D%", "change1d")}
+                          </th>
+                          <th className="px-3 py-2 text-right font-semibold">
+                            {renderTickerSortableHeader("5D%", "change5d")}
+                          </th>
+                          <th className="px-3 py-2 text-right font-semibold">
+                            {renderTickerSortableHeader("RelVol10", "relVol10")}
+                          </th>
+                          <th className="px-3 py-2 text-right font-semibold">
+                            {renderTickerSortableHeader("$Vol Today", "dollarVolToday")}
+                          </th>
+                          <th className="px-3 py-2 text-right font-semibold">
+                            {renderTickerSortableHeader("Avg $Vol10", "avgDollarVol10")}
+                          </th>
+                          {isEditing ? (
+                            <th className="px-2 py-2 text-right font-semibold">
+                              <span className="sr-only">Remove ticker</span>
+                            </th>
+                          ) : null}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-800 bg-[#1E2937]">
+                        {sortedTickers.map((ticker) => {
+                          const change1d = formatPercent(ticker.change1d, 2);
+                          const change5d = formatPercent(ticker.change5d, 2);
+                          const relVol = formatRelativeVolume(ticker.relVol10);
+                          return (
+                            <tr key={ticker.ticker} className="bg-[#1E2937] hover:bg-[#26374D]">
+                              <td className="px-3 py-2 font-mono text-sm text-gray-100">
+                                {ticker.ticker}
+                                {ticker.inactive ? (
+                                  <span className="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-200">
+                                    inactive
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className={`px-3 py-2 text-right font-mono text-xs ${change1d.tone}`}>
+                                {change1d.text}
+                              </td>
+                              <td className={`px-3 py-2 text-right font-mono text-xs ${change5d.tone}`}>
+                                {change5d.text}
+                              </td>
+                              <td className="px-3 py-2 text-right font-mono text-xs text-gray-200">{relVol}</td>
+                              <td className="px-3 py-2 text-right font-mono text-xs text-gray-300">
+                                {formatCompactNumber(ticker.dollarVolToday)}
+                              </td>
+                              <td className="px-3 py-2 text-right font-mono text-xs text-gray-300">
+                                {formatCompactNumber(ticker.avgDollarVol10)}
+                              </td>
+                              {isEditing ? (
+                                <td className="px-2 py-2 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveTicker(ticker.ticker)}
+                                    disabled={loading}
+                                    className="rounded-full border border-gray-600 px-2 py-0.5 text-xs font-semibold text-gray-300 transition hover:border-rose-400 hover:text-rose-200 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500"
+                                    aria-label={`Remove ${ticker.ticker}`}
+                                  >
+                                    &times;
+                                  </button>
+                                </td>
                               ) : null}
-                            </td>
-                            <td className={`px-3 py-2 text-right font-mono text-xs ${change1d.tone}`}>
-                              {change1d.text}
-                            </td>
-                            <td className={`px-3 py-2 text-right font-mono text-xs ${change5d.tone}`}>
-                              {change5d.text}
-                            </td>
-                            <td className="px-3 py-2 text-right font-mono text-xs text-gray-200">{relVol}</td>
-                            <td className="px-3 py-2 text-right font-mono text-xs text-gray-300">
-                              {formatCompactNumber(ticker.dollarVolToday)}
-                            </td>
-                            <td className="px-3 py-2 text-right font-mono text-xs text-gray-300">
-                              {formatCompactNumber(ticker.avgDollarVol10)}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-gray-700 bg-[#132030] p-4 text-sm text-gray-400">
-                  No tickers available for this sector snapshot.
-                </div>
-              )
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-gray-700 bg-[#132030] p-4 text-sm text-gray-400">
+                    No tickers available for this sector snapshot.
+                  </div>
+                )}
+                {isEditing ? (
+                  <div className="space-y-2">
+                    <form className="flex items-center gap-2" onSubmit={handleAddTickerSubmit}>
+                      <input
+                        type="text"
+                        value={newTickerInput}
+                        onChange={handleTickerInputChange}
+                        placeholder="Add ticker"
+                        className="w-36 rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gray-100 placeholder:font-normal placeholder:text-gray-500 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                        disabled={!selectedSectorDefinition || loading}
+                        aria-label="Add ticker to sector"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!selectedSectorDefinition || loading || !newTickerInput}
+                        className="rounded-md border border-emerald-500/60 px-2 py-1 text-xs font-semibold text-emerald-200 transition hover:border-emerald-400 hover:text-white disabled:cursor-not-allowed disabled:border-gray-700 disabled:text-gray-500"
+                      >
+                        Add
+                      </button>
+                    </form>
+                    {mutationError ? <p className="text-xs text-rose-300">{mutationError}</p> : null}
+                  </div>
+                ) : null}
+              </div>
             ) : (
               <div className="rounded-lg border border-dashed border-gray-700 bg-[#132030] p-4 text-sm text-gray-400">
                 Select a sector to inspect its members.
