@@ -119,11 +119,18 @@ async def test_sectors_volume_returns_snapshot_with_headers(snapshot_client, sna
         )
         assert resp.status_code == 200
         payload = resp.json()
-        assert isinstance(payload, list)
-        assert payload
-        assert payload[0]["id"] == snapshot_context["payload"]["sectors"][0]["id"]
-        assert "change1d_weighted" in payload[0]
-        assert "change5d_weighted" in payload[0] or payload[0].get("change5d_weighted") is None
+        assert isinstance(payload, dict)
+        sectors = payload.get("sectors")
+        assert isinstance(sectors, list)
+        assert sectors
+        first_sector = sectors[0]
+        assert first_sector["id"] == snapshot_context["payload"]["sectors"][0]["id"]
+        assert "change1d_weighted" in first_sector
+        assert "change5d_weighted" in first_sector or first_sector.get("change5d_weighted") is None
+        assert payload["asOfDate"] == snapshot_context["payload"]["snapshot_date"]
+        assert payload["stale"] is False
+        assert payload["sectors_count"] == len(snapshot_context["payload"]["sectors"])
+        assert payload["members_count"] == len(snapshot_context["payload"]["sectors"][0]["members"])
         assert resp.headers.get("X-RateLimit-Limit") == "5"
         remaining = resp.headers.get("X-RateLimit-Remaining")
         assert remaining is not None
@@ -145,6 +152,10 @@ async def test_sectors_volume_rate_limited(snapshot_client):
     try:
         ok = await snapshot_client.get("/metrics/sectors/volume", headers=headers)
         assert ok.status_code == 200
+        ok_payload = ok.json()
+        assert isinstance(ok_payload, dict)
+        assert "sectors" in ok_payload
+        assert "asOfDate" in ok_payload
         limited = await snapshot_client.get("/metrics/sectors/volume", headers=headers)
         assert limited.status_code == 429
         retry_after = limited.headers.get("Retry-After")

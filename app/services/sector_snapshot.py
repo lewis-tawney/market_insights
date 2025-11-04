@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import hashlib
+import os
+import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Python < 3.9 fallback
+    ZoneInfo = None  # type: ignore[assignment]
 
 import duckdb  # type: ignore[import]
 
+from app.config import load_config
 from app.schemas.sector_volume import (
     SectorIn,
     SectorVolumeDTO,
@@ -21,13 +31,32 @@ DATA_DIR = Path("data")
 SNAPSHOT_DB = DATA_DIR / "market.duckdb"
 SNAPSHOT_DIR = Path("snapshots")
 LATEST_SNAPSHOT_JSON = SNAPSHOT_DIR / "sectors_volume_latest.json"
+SNAPSHOT_CHECKSUM_DIR = SNAPSHOT_DIR / "checksums"
 
 FAILURE_THRESHOLD = 3
 FAILURE_WINDOW_DAYS = 30
+MIN_HISTORY_DAYS = 11
+
+try:
+    EASTERN_TZ = ZoneInfo("America/New_York") if ZoneInfo else None
+except Exception:  # pragma: no cover - zoneinfo may be missing tzdata
+    EASTERN_TZ = None
+
+SNAPSHOT_WRITE_LOCK = asyncio.Lock()
+_SECTOR_LOCKS: Dict[str, asyncio.Lock] = {}
 
 
 class SnapshotNotFoundError(Exception):
     """Raised when no sector volume snapshot is available."""
+
+
+def get_sector_lock(sector_id: str) -> asyncio.Lock:
+    key = sector_id.strip().upper()
+    lock = _SECTOR_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SECTOR_LOCKS[key] = lock
+    return lock
 
 
 @dataclass
@@ -170,6 +199,207 @@ def _determine_inactive(rows: List[tuple]) -> Set[str]:
             inactive.add(str(symbol).upper())
 
     return inactive
+
+
+def _load_inactive_symbols(conn: duckdb.DuckDBPyConnection) -> Set[str]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT symbol, failure_count, last_failure
+            FROM ticker_failures
+            """
+        ).fetchall()
+    except duckdb.Error:
+        return set()
+    return _determine_inactive(rows)
+
+
+def _load_metrics_for_symbols(
+    conn: duckdb.DuckDBPyConnection, symbols: Iterable[str]
+) -> Dict[str, TickerMetric]:
+    normalized = []
+    for symbol in symbols:
+        if not symbol:
+            continue
+        normalized_symbol = str(symbol).strip().upper()
+        if normalized_symbol:
+            normalized.append(normalized_symbol)
+    if not normalized:
+        return {}
+
+    placeholders = ",".join("?" for _ in normalized)
+    query = f"""
+        SELECT symbol,
+               CAST(last_date AS VARCHAR) AS last_date,
+               dollar_vol_today,
+               avg_dollar_vol10,
+               rel_vol10,
+               change1d,
+               change5d,
+               dollar_vol5d,
+               price_history
+        FROM ticker_metrics
+        WHERE symbol IN ({placeholders})
+    """
+    metrics: Dict[str, TickerMetric] = {}
+    try:
+        rows = conn.execute(query, normalized).fetchall()
+    except duckdb.Error:
+        rows = []
+
+    for (
+        symbol,
+        last_date,
+        dollar_vol_today,
+        avg_dollar_vol10,
+        rel_vol10,
+        change1d,
+        change5d,
+        dollar_vol5d,
+        history_json,
+    ) in rows:
+        if not symbol:
+            continue
+        key = str(symbol).strip().upper()
+        try:
+            history_data = json.loads(history_json) if history_json else []
+        except (TypeError, json.JSONDecodeError):
+            history_data = []
+        parsed_history: List[Dict[str, float]] = []
+        for entry in history_data:
+            if not isinstance(entry, dict):
+                continue
+            record: Dict[str, float] = {}
+            date_val = entry.get("date")
+            if isinstance(date_val, str):
+                record["date"] = date_val
+            close_val = entry.get("close")
+            if isinstance(close_val, (int, float)):
+                record["close"] = float(close_val)
+            volume_val = entry.get("volume")
+            if isinstance(volume_val, (int, float)):
+                record["volume"] = float(volume_val)
+            dollar_val = entry.get("dollarVolume")
+            if isinstance(dollar_val, (int, float)):
+                record["dollarVolume"] = float(dollar_val)
+            if record:
+                parsed_history.append(record)
+
+        metrics[key] = TickerMetric(
+            symbol=key,
+            last_date=last_date if last_date else None,
+            dollar_vol_today=_safe_float(dollar_vol_today),
+            avg_dollar_vol10=_safe_float(avg_dollar_vol10),
+            rel_vol10=_safe_float(rel_vol10),
+            change1d=_safe_float(change1d),
+            change5d=_safe_float(change5d),
+            dollar_vol5d=_safe_float(dollar_vol5d),
+            history=parsed_history,
+        )
+
+    return metrics
+
+
+def _compute_metric_from_ohlc(
+    conn: duckdb.DuckDBPyConnection, symbol: str
+) -> Optional[TickerMetric]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT date, close, volume, dollar_volume
+            FROM ticker_ohlc
+            WHERE symbol = ?
+            ORDER BY date
+            """,
+            (symbol,),
+        ).fetchall()
+    except duckdb.Error:
+        return None
+
+    if len(rows) < MIN_HISTORY_DAYS:
+        return None
+
+    dates: List[str] = []
+    closes: List[float] = []
+    volumes: List[float] = []
+    dollar_vols: List[float] = []
+    for date_val, close, volume, dollar_volume in rows:
+        if (
+            date_val is None
+            or close is None
+            or volume is None
+            or dollar_volume is None
+        ):
+            continue
+        if hasattr(date_val, "isoformat"):
+            date_str = date_val.isoformat()
+        else:
+            date_str = str(date_val)
+        try:
+            close_val = float(close)
+            volume_val = float(volume)
+            dollar_val = float(dollar_volume)
+        except (TypeError, ValueError):
+            continue
+        dates.append(date_str)
+        closes.append(close_val)
+        volumes.append(volume_val)
+        dollar_vols.append(dollar_val)
+
+    if len(dates) < MIN_HISTORY_DAYS or len(closes) < MIN_HISTORY_DAYS:
+        return None
+
+    prev_dollar_vols = dollar_vols[-MIN_HISTORY_DAYS:-1]
+    if len(prev_dollar_vols) < 10:
+        return None
+    avg_dollar_vol10 = sum(prev_dollar_vols[-10:]) / 10.0
+    dollar_vol_today = dollar_vols[-1]
+
+    change5d: Optional[float] = None
+    if len(closes) >= 6:
+        base = closes[-6]
+        if base:
+            change5d = ((closes[-1] / base) - 1.0) * 100.0
+
+    dollar_vol5d: Optional[float] = None
+    if len(dollar_vols) >= 5:
+        dollar_vol5d = sum(dollar_vols[-5:])
+
+    if len(closes) < 2:
+        return None
+
+    prev_close = closes[-2]
+    change1d = ((closes[-1] / prev_close) - 1.0) * 100.0 if prev_close else None
+
+    rel_vol10 = None
+    if avg_dollar_vol10:
+        rel_vol10 = dollar_vol_today / avg_dollar_vol10 if avg_dollar_vol10 != 0 else None
+
+    history_window = 30
+    history_entries: List[Dict[str, float]] = []
+    for date_str, close_val, volume_val, dollar_val in zip(
+        dates[-history_window:], closes[-history_window:], volumes[-history_window:], dollar_vols[-history_window:]
+    ):
+        history_entries.append(
+            {
+                "date": date_str,
+                "close": close_val,
+                "volume": volume_val,
+                "dollarVolume": dollar_val,
+            }
+        )
+
+    return TickerMetric(
+        symbol=str(symbol).strip().upper(),
+        last_date=dates[-1],
+        dollar_vol_today=dollar_vol_today,
+        avg_dollar_vol10=avg_dollar_vol10,
+        rel_vol10=rel_vol10,
+        change1d=change1d,
+        change5d=change5d,
+        dollar_vol5d=dollar_vol5d,
+        history=history_entries,
+    )
 
 
 def _load_metrics_from_json() -> Tuple[Dict[str, TickerMetric], Set[str]]:
@@ -414,6 +644,288 @@ def aggregate_sectors(
     return results
 
 
+SectorRowDTO = SectorVolumeDTO
+
+
+def recompute_sector(sector_id: str, conn: duckdb.DuckDBPyConnection) -> SectorRowDTO:
+    sector_key = str(sector_id).strip()
+    if not sector_key:
+        raise SnapshotNotFoundError("Sector identifier is required.")
+
+    try:
+        row = conn.execute(
+            """
+            SELECT name
+            FROM sector_definitions
+            WHERE sector_id = ?
+            """,
+            (sector_key,),
+        ).fetchone()
+    except duckdb.Error as exc:
+        raise SnapshotNotFoundError(f"Unable to load sector definition for {sector_key}") from exc
+
+    if row is None:
+        raise SnapshotNotFoundError(f"Sector '{sector_key}' not found.")
+
+    sector_name = row[0] if row and row[0] else sector_key
+
+    try:
+        member_rows = conn.execute(
+            """
+            SELECT symbol
+            FROM sectors_map
+            WHERE sector_id = ?
+            ORDER BY symbol
+            """,
+            (sector_key,),
+        ).fetchall()
+    except duckdb.Error as exc:
+        raise SnapshotNotFoundError(f"Unable to load sector members for {sector_key}") from exc
+
+    members: List[str] = [
+        str(symbol).strip().upper()
+        for (symbol,) in member_rows
+        if symbol and str(symbol).strip()
+    ]
+
+    sector_input = SectorIn(id=sector_key, name=str(sector_name), tickers=members)
+
+    metrics = _load_metrics_for_symbols(conn, members)
+    for symbol in members:
+        if symbol not in metrics:
+            metric = _compute_metric_from_ohlc(conn, symbol)
+            if metric:
+                metrics[symbol] = metric
+
+    inactive_symbols = _load_inactive_symbols(conn)
+
+    aggregated = aggregate_sectors([sector_input], metrics, inactive_symbols)
+    if not aggregated:
+        return SectorVolumeDTO(id=sector_input.id, name=sector_input.name, members=[])
+    return aggregated[0]
+
+
+def compute_snapshot_metadata(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    snapshot_date = payload.get("snapshot_date")
+    generated_at_str = payload.get("generated_at")
+
+    generated_dt_utc: Optional[datetime] = None
+    if isinstance(generated_at_str, str):
+        try:
+            generated_dt_utc = datetime.fromisoformat(generated_at_str)
+        except ValueError:
+            generated_dt_utc = None
+        if generated_dt_utc and generated_dt_utc.tzinfo is None:
+            generated_dt_utc = generated_dt_utc.replace(tzinfo=timezone.utc)
+
+    if generated_dt_utc:
+        age = datetime.now(timezone.utc) - generated_dt_utc.astimezone(timezone.utc)
+        stale = age > timedelta(hours=24)
+        if EASTERN_TZ is not None:
+            as_of_time_et = generated_dt_utc.astimezone(EASTERN_TZ).strftime("%H:%M:%S")
+        else:  # pragma: no cover - missing tzdata
+            as_of_time_et = None
+    else:
+        as_of_time_et = None
+        stale = True
+
+    sectors_data = payload.get("sectors")
+    sectors_count = len(sectors_data) if isinstance(sectors_data, list) else 0
+    members_count = 0
+    if isinstance(sectors_data, list):
+        for entry in sectors_data:
+            if isinstance(entry, dict):
+                members = entry.get("members")
+                if isinstance(members, list):
+                    members_count += len(members)
+
+    return {
+        "asOfDate": snapshot_date,
+        "asOfTimeET": as_of_time_et,
+        "sectors_count": sectors_count,
+        "members_count": members_count,
+        "stale": stale,
+    }
+
+
+def _ensure_writable_dir(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    fd = None
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(path))
+    except OSError:
+        return False
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+    return True
+
+
+def _snapshot_temp_root() -> Path:
+    candidates: List[Path] = []
+
+    def _add_candidate(raw: Optional[str]) -> None:
+        if not raw:
+            return
+        candidate = Path(raw).expanduser()
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    _add_candidate(os.environ.get("SNAPSHOT_TMP_DIR"))
+
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+    snapshot_cfg = config.get("snapshot")
+    if isinstance(snapshot_cfg, dict):
+        cfg_path = snapshot_cfg.get("tmp_dir")
+        if isinstance(cfg_path, str) and cfg_path.strip():
+            _add_candidate(cfg_path.strip())
+
+    _add_candidate(os.environ.get("TMPDIR"))
+    _add_candidate("var/tmp")
+
+    for candidate in candidates:
+        if _ensure_writable_dir(candidate):
+            return candidate
+
+    fallback = Path("var/tmp")
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = getattr(os, "O_RDONLY", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        dir_fd = os.open(str(path), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def _atomic_write_file(path: Path, data: bytes) -> None:
+    temp_root = _snapshot_temp_root()
+    temp_root.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=f"{path.name}.", dir=str(temp_root))
+    try:
+        with os.fdopen(fd, "wb") as tmp_file:
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(tmp_path, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _patch_latest_snapshot_sync(updated_row: SectorRowDTO) -> None:
+    payload = load_snapshot_payload()
+    sectors_payload = payload.get("sectors")
+    if not isinstance(sectors_payload, list):
+        sectors_payload = []
+
+    row_data = updated_row.model_dump()
+    sector_id = row_data.get("id")
+    if not isinstance(sector_id, str) or not sector_id.strip():
+        raise SnapshotNotFoundError("Updated sector row must include a valid 'id'.")
+
+    new_sectors: List[Dict[str, Any]] = []
+    replaced = False
+    for entry in sectors_payload:
+        if isinstance(entry, dict) and entry.get("id") == sector_id:
+            new_sectors.append(row_data)
+            replaced = True
+        elif isinstance(entry, dict):
+            new_sectors.append(entry)
+    if not replaced:
+        new_sectors.append(row_data)
+
+    payload["sectors"] = new_sectors
+    payload["sectors_count"] = len(new_sectors)
+    payload["members_count"] = sum(
+        len(entry.get("members", [])) for entry in new_sectors if isinstance(entry, dict)
+    )
+
+    ticker_metrics_payload = payload.get("ticker_metrics")
+    if not isinstance(ticker_metrics_payload, dict):
+        ticker_metrics_payload = {}
+    for member in row_data.get("members_detail", []):
+        if not isinstance(member, dict):
+            continue
+        if member.get("inactive"):
+            continue
+        ticker = member.get("ticker")
+        if not isinstance(ticker, str) or not ticker.strip():
+            continue
+        ticker_key = ticker.strip().upper()
+        ticker_metrics_payload[ticker_key] = {
+            "last_date": member.get("lastUpdated"),
+            "dollar_vol_today": member.get("dollarVolToday"),
+            "avg_dollar_vol10": member.get("avgDollarVol10"),
+            "rel_vol10": member.get("relVol10"),
+            "change1d": member.get("change1d"),
+            "change5d": member.get("change5d"),
+            "dollar_vol5d": member.get("dollarVol5d"),
+            "history": member.get("history", []),
+        }
+    payload["ticker_metrics"] = ticker_metrics_payload
+
+    generated_at_dt = datetime.now(timezone.utc)
+    payload["generated_at"] = generated_at_dt.isoformat()
+
+    json_bytes = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    _atomic_write_file(LATEST_SNAPSHOT_JSON, json_bytes)
+    checksum = hashlib.sha256(json_bytes).hexdigest().encode("ascii") + b"\n"
+    checksum_path = SNAPSHOT_CHECKSUM_DIR / f"{LATEST_SNAPSHOT_JSON.name}.sha256"
+    _atomic_write_file(checksum_path, checksum)
+
+    snapshot_date = payload.get("snapshot_date")
+    if snapshot_date:
+        try:
+            conn = duckdb.connect(str(SNAPSHOT_DB))
+        except duckdb.Error:
+            conn = None
+        if conn is not None:
+            try:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO sector_snapshot (snapshot_date, generated_at, payload)
+                    VALUES (?, ?, ?)
+                    """,
+                    (snapshot_date, generated_at_dt, json.dumps(payload, sort_keys=True)),
+                )
+            except duckdb.Error:
+                pass
+            finally:
+                conn.close()
+
+
+async def patch_latest_snapshot(updated_row: SectorRowDTO) -> None:
+    async with SNAPSHOT_WRITE_LOCK:
+        await asyncio.to_thread(_patch_latest_snapshot_sync, updated_row)
+
+
 def _safe_median(values: List[float]) -> Optional[float]:
     clean = [v for v in values if v is not None]
     if not clean:
@@ -457,4 +969,9 @@ __all__ = [
     "load_latest_metrics_snapshot",
     "load_snapshot_payload",
     "aggregate_sectors",
+    "SectorRowDTO",
+    "recompute_sector",
+    "patch_latest_snapshot",
+    "get_sector_lock",
+    "compute_snapshot_metadata",
 ]

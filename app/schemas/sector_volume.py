@@ -55,6 +55,15 @@ class SectorVolumeRequest(BaseModel):
     sectors: List[SectorIn]
 
 
+class SectorVolumeResponse(BaseModel):
+    asOfDate: Optional[str] = None
+    asOfTimeET: Optional[str] = None
+    sectors_count: int = 0
+    members_count: int = 0
+    stale: bool = True
+    sectors: List[SectorVolumeDTO] = Field(default_factory=list)
+
+
 __all__ = [
     "SectorIn",
     "TickerLeaderDTO",
@@ -62,4 +71,5 @@ __all__ = [
     "TickerMetricDTO",
     "SectorVolumeDTO",
     "SectorVolumeRequest",
+    "SectorVolumeResponse",
 ]

@@ -1,25 +1,108 @@
 # app/routes/api.py
 from __future__ import annotations
 
+import json
 import time
 from math import isnan
-from pathlib import Path
-import json
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-import pandas as pd  # type: ignore[import]
-import pytz  # type: ignore[import]
-from fastapi import APIRouter, HTTPException, Query, Request
+import asyncio
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from app.services.sector_snapshot import (
     SnapshotNotFoundError,
-    load_latest_metrics_snapshot,
     load_snapshot_payload,
+    compute_snapshot_metadata,
 )
+from app.services.candles_duckdb import get_daily_eod, period_start
+from app.services.jobs import JobManager
 
 router = APIRouter()
+
+
+def _job_manager(request: Request) -> JobManager:
+    jobs = getattr(request.app.state, "jobs", None)
+    if jobs is None:
+        raise HTTPException(status_code=503, detail="Job manager unavailable")
+    return jobs
+
+
+def _use_duckdb_eod(request: Request) -> bool:
+    cfg = getattr(request.app.state, "config", {})
+    metrics_cfg = cfg.get("metrics", {}) if isinstance(cfg, dict) else {}
+    return bool(metrics_cfg.get("use_duckdb_eod"))
+
+
+@router.post("/tasks/dummy", status_code=status.HTTP_202_ACCEPTED)
+async def enqueue_dummy_task(request: Request):
+    jobs = _job_manager(request)
+
+    async def _job() -> Optional[str]:
+        await asyncio.sleep(0.05)
+        return "dummy completed"
+
+    task_id = await jobs.enqueue("dummy", _job)
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"task_id": task_id})
+
+
+@router.post("/tasks/sectors/{sector_id}/patch", status_code=status.HTTP_202_ACCEPTED)
+async def enqueue_sector_patch(sector_id: str, request: Request):
+    jobs = _job_manager(request)
+    task_id = await jobs.enqueue_sector_patch(sector_id)
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"task_id": task_id})
+
+
+@router.get("/tasks/{task_id}")
+async def task_status(task_id: str, request: Request) -> Dict[str, Any]:
+    jobs = _job_manager(request)
+    record = await jobs.get(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return record.to_dict()
+
+
+class TickerMutation(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20)
+
+
+def _apply_rate_headers(response: JSONResponse, headers: Dict[str, str]) -> JSONResponse:
+    for header, value in headers.items():
+        response.headers[header] = value
+    return response
+
+
+@router.post("/sectors/{sector_id}/tickers", status_code=status.HTTP_202_ACCEPTED)
+async def add_sector_ticker(sector_id: str, payload: TickerMutation, request: Request):
+    security = request.app.state.security
+    client_ip, token_id = security.authorize(request)
+    rate_headers = security.check_rate_limit(
+        client_ip=client_ip, token_id=token_id, route=f"/sectors/{sector_id}/tickers"
+    )
+
+    jobs = _job_manager(request)
+    try:
+        task_id = await jobs.enqueue_add_ticker(sector_id, payload.symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    response = JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"task_id": task_id})
+    return _apply_rate_headers(response, rate_headers)
+
+
+@router.delete("/sectors/{sector_id}/tickers/{symbol}", status_code=status.HTTP_202_ACCEPTED)
+async def remove_sector_ticker(sector_id: str, symbol: str, request: Request):
+    security = request.app.state.security
+    client_ip, token_id = security.authorize(request)
+    rate_headers = security.check_rate_limit(
+        client_ip=client_ip, token_id=token_id, route=f"/sectors/{sector_id}/tickers/{symbol}"
+    )
+
+    jobs = _job_manager(request)
+    task_id = await jobs.enqueue_remove_ticker(sector_id, symbol)
+    response = JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"task_id": task_id})
+    return _apply_rate_headers(response, rate_headers)
 
 
 def _to_float(x) -> Optional[float]:
@@ -77,47 +160,7 @@ async def snapshot_health() -> Dict[str, Any]:
     except SnapshotNotFoundError:
         raise HTTPException(status_code=503, detail="Snapshot unavailable")
 
-    try:
-        metrics, inactive = load_latest_metrics_snapshot()
-    except SnapshotNotFoundError:
-        metrics, inactive = {}, set()
-
-    snapshot_date = payload.get("snapshot_date")
-    generated_at_str = payload.get("generated_at")
-    generated_dt_utc: Optional[datetime] = None
-    if isinstance(generated_at_str, str):
-        try:
-            generated_dt_utc = datetime.fromisoformat(generated_at_str)
-        except ValueError:
-            generated_dt_utc = None
-        if generated_dt_utc and generated_dt_utc.tzinfo is None:
-            generated_dt_utc = generated_dt_utc.replace(tzinfo=timezone.utc)
-
-    eastern = pytz.timezone("America/New_York")
-    if generated_dt_utc:
-        as_of_time_et = generated_dt_utc.astimezone(eastern).strftime("%H:%M:%S")
-        age = datetime.now(timezone.utc) - generated_dt_utc.astimezone(timezone.utc)
-        stale = age > timedelta(hours=24)
-    else:
-        as_of_time_et = None
-        stale = True
-
-    sectors_data = payload.get("sectors", [])
-    sectors_count = len(sectors_data) if isinstance(sectors_data, list) else 0
-    members_count = 0
-    if isinstance(sectors_data, list):
-        for entry in sectors_data:
-            members = entry.get("members") if isinstance(entry, dict) else None
-            if isinstance(members, list):
-                members_count += len(members)
-
-    return {
-        "asOfDate": snapshot_date,
-        "asOfTimeET": as_of_time_et,
-        "sectors_count": sectors_count,
-        "members_count": members_count,
-        "stale": stale,
-    }
+    return compute_snapshot_metadata(payload)
 
 
 @router.get("/price")
@@ -127,43 +170,35 @@ async def price(symbol: str, request: Request):
     return {"symbol": symbol.upper(), "price": p}
 
 
-@router.get("/debug/yf")
-async def debug_yf(symbol: str, period: str = "1mo", interval: str = "1d"):
-    """Direct yfinance check to diagnose empty responses.
+@router.get("/debug/market-data")
+async def debug_market_data(request: Request) -> Dict[str, Any]:
+    """Provider-agnostic diagnostics endpoint."""
+    market = getattr(request.app.state, "market", None)
+    if market is None:
+        raise HTTPException(status_code=503, detail="Market provider unavailable")
 
-    Returns basic stats about fetched rows and date range without caching.
-    """
-    try:
-        from app.providers.yfinance import YFinanceProvider as _YFP  # lazy import
+    diag_source = getattr(market, "diagnostics", None)
+    if callable(diag_source):
+        info = diag_source() or {}
+    else:
+        provider = getattr(market, "inner", market)
+        diag_func = getattr(provider, "diagnostics", None)
+        if callable(diag_func):
+            info = diag_func() or {}
+        else:
+            provider_name = provider.__class__.__name__ if provider else "unknown"
+            info = {"name": provider_name}
 
-        df = _YFP._download_history(symbol.strip().upper(), period, interval)
-        import yfinance as yf  # type: ignore
+    if not isinstance(info, dict):
+        info = {"name": str(info)}
 
-        if df is None:
-            return {
-                "ok": False,
-                "reason": "no_dataframe",
-                "yfinance_version": getattr(yf, "__version__", "unknown"),
-            }
-        rows = int(getattr(df, "shape", (0,))[0] or 0)
-        first = None
-        last = None
-        try:
-            if rows > 0 and hasattr(df, "index") and len(df.index) > 0:
-                first = df.index[0].isoformat() if hasattr(df.index[0], "isoformat") else str(df.index[0])
-                last = df.index[-1].isoformat() if hasattr(df.index[-1], "isoformat") else str(df.index[-1])
-        except Exception:
-            pass
-        return {
-            "ok": rows > 0,
-            "rows": rows,
-            "first": first,
-            "last": last,
-            "columns": list(getattr(df, "columns", [])),
-            "yfinance_version": getattr(yf, "__version__", "unknown"),
-        }
-    except Exception as e:  # pragma: no cover - debug only
-        return {"ok": False, "error": str(e)}
+    info.setdefault("name", "unknown")
+    info.setdefault("request_quota", None)
+    info.setdefault("recent_request_ids", [])
+    info.setdefault("error_rate", None)
+    info.setdefault("base_url", None)
+
+    return info
 
 
 @router.get("/compass")
@@ -215,10 +250,15 @@ async def compass(request: Request):
 @router.get("/screen")
 async def screen(request: Request, symbols: str):
     md = request.app.state.market
+    use_duckdb = _use_duckdb_eod(request)
+    duckdb_start = period_start("6mo") if use_duckdb else None
     syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     results: List[Dict[str, Any]] = []
     for s in syms:
-        ohlc = await md.get_ohlc(s, period="6mo", interval="1d")
+        if use_duckdb:
+            ohlc = await asyncio.to_thread(get_daily_eod, s, duckdb_start, None)
+        else:
+            ohlc = await md.get_ohlc(s, period="6mo", interval="1d")
         series = _extract_ohlc(ohlc)
         closes, vols = series["close"], series["vol"]
         n = len(closes)

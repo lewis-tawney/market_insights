@@ -123,6 +123,39 @@ export async function getJSON<T>(path: string): Promise<T> {
   });
 }
 
+export async function getJSONNoCache<T>(path: string): Promise<T> {
+  const url = join(BASE, path);
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
+  }
+  return (await res.json()) as T;
+}
+
+async function requestJSON<T>(path: string, init: RequestInit): Promise<T> {
+  const url = join(BASE, path);
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  if (init.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const response = await fetch(url, { ...init, headers });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status} ${response.statusText}: ${text}`);
+  }
+
+  const text = await response.text();
+  if (!text) {
+    return {} as T;
+  }
+  return JSON.parse(text) as T;
+}
+
 export interface TrendResponse {
   symbol: string;
   as_of: string;
@@ -252,16 +285,68 @@ export interface SnapshotHealthSummary {
   stale: boolean;
 }
 
+export interface SectorVolumeResponse {
+  asOfDate: string | null;
+  asOfTimeET: string | null;
+  sectors_count: number;
+  members_count: number;
+  stale: boolean;
+  sectors: SectorVolumeDTO[];
+}
+
 export async function fetchSectorVolumeAggregate(sectors?: SectorIn[]): Promise<SectorVolumeDTO[]> {
+  let response: SectorVolumeResponse;
   if (sectors && sectors.length) {
     const payload = encodeURIComponent(JSON.stringify({ sectors }));
-    return getJSON<SectorVolumeDTO[]>(`/metrics/sectors/volume?payload=${payload}`);
+    response = await getJSONNoCache<SectorVolumeResponse>(`/metrics/sectors/volume?payload=${payload}`);
+  } else {
+    response = await getJSONNoCache<SectorVolumeResponse>(`/metrics/sectors/volume`);
   }
-  return getJSON<SectorVolumeDTO[]>(`/metrics/sectors/volume`);
+  // Extract the sectors array from the response
+  return response.sectors || [];
 }
 
 export async function fetchSnapshotHealth(): Promise<SnapshotHealthSummary> {
   return getJSON<SnapshotHealthSummary>(`/health/snapshot`);
+}
+
+export interface TaskStatusResponse {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  message?: string | null;
+  started?: string | null;
+  ended?: string | null;
+  meta?: Record<string, unknown> | null;
+}
+
+export interface TaskEnqueueResponse {
+  task_id: string;
+}
+
+export async function addSectorTicker(sectorId: string, symbol: string): Promise<TaskEnqueueResponse> {
+  return requestJSON<TaskEnqueueResponse>(
+    `/sectors/${encodeURIComponent(sectorId)}/tickers`,
+    {
+      method: "POST",
+      body: JSON.stringify({ symbol }),
+    },
+  );
+}
+
+export async function removeSectorTicker(sectorId: string, symbol: string): Promise<TaskEnqueueResponse> {
+  return requestJSON<TaskEnqueueResponse>(
+    `/sectors/${encodeURIComponent(sectorId)}/tickers/${encodeURIComponent(symbol)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export async function fetchTaskStatus(taskId: string): Promise<TaskStatusResponse> {
+  return requestJSON<TaskStatusResponse>(`/tasks/${encodeURIComponent(taskId)}`, {
+    method: "GET",
+  });
 }
 
 // Breadth endpoints removed - not needed

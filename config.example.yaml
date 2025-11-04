@@ -3,6 +3,10 @@ logging:
   level: INFO
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+# Snapshot jobs
+snapshot:
+  tmp_dir: "./var/tmp"
+
 # Cache configuration
 cache:
   ttl:
@@ -26,9 +30,14 @@ security:
   frontend_origin: "http://localhost:5173"
 
 providers:
-  polygon:
-    api_key: ${POLYGON_API_KEY}
-    base_url: "https://api.polygon.io"
+  default: "massive"
+  massive:
+    enabled: true
+    api_key_env: "MASSIVE_API_KEY"
+    base_url: "https://api.massive.com"
+    timeout: 10
+    retries: 3
+    equity_universe: []
 
 database:
   postgres:

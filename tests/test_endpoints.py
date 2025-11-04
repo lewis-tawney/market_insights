@@ -3,9 +3,8 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
-import pytest
 import httpx
+import pytest
 
 
 def _gen_ohlc(days: int, base: float = 100.0) -> List[Dict[str, Any]]:
@@ -45,6 +44,15 @@ class _FakeProvider:
     async def get_vix_term(self) -> Optional[Dict[str, float]]:
         # Contango: 9D < spot < 3M
         return {"^VIX9D": 14.0, "^VIX": 16.0, "^VIX3M": 20.0}
+
+    def diagnostics(self) -> Dict[str, Any]:
+        return {
+            "name": "fake",
+            "request_quota": None,
+            "recent_request_ids": ["abc123"],
+            "error_rate": {"success": 5, "failure": 0, "rate": 0.0},
+            "base_url": "http://fake",
+        }
 
 
 @pytest.fixture(scope="module")
@@ -167,28 +175,10 @@ async def test_screen(aclient: httpx.AsyncClient):
 
 
 @pytest.mark.anyio("asyncio")
-async def test_debug_yf(monkeypatch):
-    # Patch the static download to avoid real network
-    from app.providers.yfinance import YFinanceProvider as YP
-    from app.main import app
-
-    df = pd.DataFrame(
-        {
-            "Open": [1.0, 2.0, 3.0],
-            "High": [1.2, 2.2, 3.2],
-            "Low": [0.8, 1.8, 2.8],
-            "Close": [1.1, 2.1, 3.1],
-            "Volume": [100, 200, 300],
-        },
-        index=pd.date_range("2024-01-01", periods=3, freq="D"),
-    )
-
-    monkeypatch.setattr(YP, "_download_history", staticmethod(lambda s, p, i: df))
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-        r = await c.get("/debug/yf", params={"symbol": "SPY"})
+@pytest.mark.anyio("asyncio")
+async def test_debug_market_data(aclient: httpx.AsyncClient):
+    r = await aclient.get("/debug/market-data")
     assert r.status_code == 200
     payload = r.json()
-    assert payload["ok"] is True
-    assert payload["rows"] == 3
+    assert payload["name"] == "fake"
+    assert isinstance(payload["recent_request_ids"], list)

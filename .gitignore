@@ -10,7 +10,6 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-.env
 .env.*
 .mypy_cache/
 .pytest_cache/
@@ -40,6 +39,8 @@ cache/
 data/*.duckdb
 data/*.duckdb.wal
 snapshots/*.json
+snapshots/checksums/
+var/tmp/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/

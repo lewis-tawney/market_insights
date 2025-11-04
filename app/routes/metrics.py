@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd  # type: ignore[import]
@@ -17,12 +17,15 @@ from app.schemas.sector_volume import (
     SectorIn,
     SectorVolumeDTO,
     SectorVolumeRequest,
+    SectorVolumeResponse,
 )
+from app.services.candles_duckdb import get_daily_eod, period_start
 from app.services.sector_snapshot import (
     aggregate_sectors,
     load_latest_metrics_snapshot,
     load_snapshot_payload,
     SnapshotNotFoundError,
+    compute_snapshot_metadata,
 )
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -131,7 +134,27 @@ def _provider(request: Request):
     return request.app.state.market
 
 
-async def _compute_trend_lite(provider, symbol: str) -> TrendLiteDTO:
+def _use_duckdb_eod(request: Request) -> bool:
+    cfg = getattr(request.app.state, "config", {})
+    metrics_cfg = cfg.get("metrics", {}) if isinstance(cfg, dict) else {}
+    return bool(metrics_cfg.get("use_duckdb_eod"))
+
+
+async def _fetch_ohlc(
+    request: Request,
+    provider,
+    symbol: str,
+    *,
+    period: str,
+    interval: str,
+) -> List[Dict[str, Any]]:
+    if _use_duckdb_eod(request) and interval == "1d":
+        start = period_start(period)
+        return await asyncio.to_thread(get_daily_eod, symbol, start, None)
+    return await provider.get_ohlc(symbol, period=period, interval=interval)
+
+
+async def _compute_trend_lite(request: Request, provider, symbol: str) -> TrendLiteDTO:
     sym = symbol.strip().upper()
     if not sym:
         return TrendLiteDTO(
@@ -143,7 +166,7 @@ async def _compute_trend_lite(provider, symbol: str) -> TrendLiteDTO:
             error="invalid_symbol",
         )
     try:
-        ohlc = await provider.get_ohlc(sym, period="1y", interval="1d")
+        ohlc = await _fetch_ohlc(request, provider, sym, period="1y", interval="1d")
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("trend-lite fetch failed for %s: %s", sym, exc)
         return TrendLiteDTO(
@@ -218,7 +241,7 @@ async def _compute_trend_lite(provider, symbol: str) -> TrendLiteDTO:
 # -------- Sector volume snapshot --------
 
 
-@router.get("/sectors/volume", response_model=List[SectorVolumeDTO])
+@router.get("/sectors/volume", response_model=SectorVolumeResponse)
 async def sectors_volume(request: Request, payload: Optional[str] = Query(None)):
     security = request.app.state.security
     client_ip, token_id = security.authorize(request)
@@ -301,9 +324,15 @@ async def sectors_volume(request: Request, payload: Optional[str] = Query(None))
             )
         aggregated = aggregate_sectors(sector_inputs, metrics_snapshot, inactive_symbols)
 
-    return _with_rate_headers(
-        JSONResponse(content=[item.model_dump() for item in aggregated])
-    )
+    metadata = compute_snapshot_metadata(snapshot_payload)
+    response_payload = dict(metadata)
+    response_payload["sectors"] = [item.model_dump() for item in aggregated]
+    if not response_payload.get("sectors_count"):
+        response_payload["sectors_count"] = len(aggregated)
+    if not response_payload.get("members_count"):
+        response_payload["members_count"] = sum(len(item.members) for item in aggregated)
+
+    return _with_rate_headers(JSONResponse(content=response_payload))
 
 
 @router.post("/sectors/volume")
@@ -314,9 +343,13 @@ async def sectors_volume_post_legacy():
     )
 
 @router.get("/trend", response_model=TrendDTO)
-async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provider)):
+async def trend(
+    request: Request,
+    symbol: str = Query(..., min_length=1),
+    provider=Depends(_provider),
+):
     # Need ~200 trading days
-    ohlc = await provider.get_ohlc(symbol, period="2y", interval="1d")
+    ohlc = await _fetch_ohlc(request, provider, symbol, period="2y", interval="1d")
     s = _close_series_from_ohlc(ohlc)
     if s.empty:
         return TrendDTO(
@@ -387,6 +420,7 @@ async def trend(symbol: str = Query(..., min_length=1), provider=Depends(_provid
 
 @router.get("/trend/lite", response_model=List[TrendLiteDTO])
 async def trend_lite(
+    request: Request,
     symbols: str = Query(..., min_length=1),
     provider=Depends(_provider),
 ):
@@ -408,15 +442,19 @@ async def trend_lite(
 
     async def _limited(symbol: str) -> TrendLiteDTO:
         async with semaphore:
-            return await _compute_trend_lite(provider, symbol)
+            return await _compute_trend_lite(request, provider, symbol)
 
     results = await asyncio.gather(*(_limited(sym) for sym in ordered))
     return results
 
 
 @router.get("/momentum", response_model=MomentumDTO)
-async def momentum(symbol: str = Query(..., min_length=1), provider=Depends(_provider)):
-    ohlc = await provider.get_ohlc(symbol, period="12mo", interval="1d")
+async def momentum(
+    request: Request,
+    symbol: str = Query(..., min_length=1),
+    provider=Depends(_provider),
+):
+    ohlc = await _fetch_ohlc(request, provider, symbol, period="12mo", interval="1d")
     s = _close_series_from_ohlc(ohlc)
 
     def pct(n: int) -> Optional[float]:
@@ -437,8 +475,12 @@ async def momentum(symbol: str = Query(..., min_length=1), provider=Depends(_pro
 
 
 @router.get("/rsi", response_model=RsiDTO)
-async def rsi(symbol: str = Query(..., min_length=1), provider=Depends(_provider)):
-    ohlc = await provider.get_ohlc(symbol, period="6mo", interval="1d")
+async def rsi(
+    request: Request,
+    symbol: str = Query(..., min_length=1),
+    provider=Depends(_provider),
+):
+    ohlc = await _fetch_ohlc(request, provider, symbol, period="6mo", interval="1d")
     s = _close_series_from_ohlc(ohlc)
     if s.empty:
         return RsiDTO(symbol=symbol.upper(), as_of=None, rsi=None, state=None)
@@ -479,12 +521,13 @@ async def vix(provider=Depends(_provider)):
 
 @router.get("/returns", response_model=ReturnsDTO)
 async def returns(
+    request: Request,
     symbol: str = Query(..., min_length=1),
     windows: str = Query("MTD,YTD"),
     provider=Depends(_provider),
 ):
     req_windows = [w.strip().upper() for w in windows.split(",") if w.strip()]
-    ohlc = await provider.get_ohlc(symbol, period="2y", interval="1d")
+    ohlc = await _fetch_ohlc(request, provider, symbol, period="2y", interval="1d")
     s = _close_series_from_ohlc(ohlc)
     out: Dict[str, Optional[float]] = {"MTD": None, "YTD": None}
     if s.empty:

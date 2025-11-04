@@ -1,18 +1,29 @@
 # app/main.py
 from __future__ import annotations
 
+import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, cast
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+# Load .env file before any config loading
+repo_root = Path(__file__).resolve().parents[1]
+env_file = repo_root / ".env"
+if env_file.exists():
+    load_dotenv(env_file)
 
 from app.config import load_config
 from app.logging_config import setup_logging
 from app.middleware import rate_limit_middleware, rate_limiter
-from app.providers.yfinance import YFinanceProvider
+from app.providers import get_provider
 from app.routes.api import router as api_router
 from app.routes.metrics import router as metrics_router
+from app.services import sector_snapshot
+from app.services.jobs import JobManager
 from engine.cache import CacheManager
 from engine.providers.base import MarketData
 from app.security import SecurityManager
@@ -58,6 +69,21 @@ class CachedProvider:
             await self.cache.cached_fetch("vix", "^VIX", fetch),
         )
 
+    def diagnostics(self) -> Dict[str, Any]:
+        provider = getattr(self, "inner", None)
+        diag_func = getattr(provider, "diagnostics", None)
+        info: Dict[str, Any]
+        if callable(diag_func):
+            info = diag_func() or {}
+        else:
+            provider_name = provider.__class__.__name__ if provider else "unknown"
+            info = {"name": provider_name}
+        info.setdefault("request_quota", None)
+        info.setdefault("recent_request_ids", [])
+        info.setdefault("error_rate", None)
+        info.setdefault("base_url", None)
+        return info
+
 
 def _parse_allowed_ips(raw: Any) -> Set[str]:
     ips: Set[str] = set()
@@ -90,8 +116,7 @@ def _make_provider(cfg: Dict[str, Any]) -> CachedProvider:
         persist_dir=cache_cfg.get("persist_dir") or None,
         persist_computed=bool(cache_cfg.get("persist_computed", False)),
     )
-    # Currently only YFinanceProvider is supported in this repo
-    inner = YFinanceProvider()
+    inner = get_provider(cfg)
 
     return CachedProvider(inner, cache)
 
@@ -164,6 +189,7 @@ app.middleware("http")(rate_limit_middleware)
 app.state.config = cfg
 app.state.market = _make_provider(cfg)
 app.state.cache = app.state.market.cache
+app.state.jobs: Optional[JobManager] = None
 
 logger.info("Market Insights API starting up...")
 
@@ -176,9 +202,26 @@ app.include_router(metrics_router)
 @app.on_event("startup")
 async def startup_event():
     """Log startup information."""
+    if app.state.jobs is None:
+        app.state.jobs = JobManager(sector_snapshot.SNAPSHOT_DB)
+    await app.state.jobs.start()
     logger.info("Market Insights API started successfully")
     logger.info(f"Rate limit: {requests_per_minute} requests per minute")
     logger.info("API documentation available at /docs")
+
+
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    jobs: Optional[JobManager] = getattr(app.state, "jobs", None)
+    if jobs is not None:
+        await jobs.stop()
+    cached_provider: Optional[CachedProvider] = getattr(app.state, "market", None)
+    if cached_provider is not None:
+        aclose = getattr(getattr(cached_provider, "inner", None), "aclose", None)
+        if callable(aclose):
+            result = aclose()
+            if asyncio.iscoroutine(result):
+                await result
 
 
 def _to_float(value: Any, fallback: float | None = None) -> float | None:

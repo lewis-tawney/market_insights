@@ -1,26 +1,42 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import duckdb  # type: ignore[import]
+from dotenv import load_dotenv
 
-from app.config import load_config  # noqa: F401  # future use for provider config
-from app.providers.yfinance import YFinanceProvider
+from app.config import load_config
+from app.providers import get_provider
 from app.schemas.sector_volume import SectorIn
 from app.services.sector_snapshot import (
     LATEST_SNAPSHOT_JSON,
     SNAPSHOT_DB,
     SNAPSHOT_DIR,
+    SNAPSHOT_CHECKSUM_DIR,
     TickerMetric,
     SnapshotNotFoundError,
     aggregate_sectors,
 )
+from engine.providers.base import MarketData
 
+
+# Ensure .env is loaded so provider configuration can resolve secrets
+REPO_ROOT = Path(__file__).resolve().parents[2]  # Go up to project root (from server/jobs/eod_snapshot.py)
+ENV_PATH = REPO_ROOT / ".env"
+if ENV_PATH.exists():
+    load_dotenv(ENV_PATH)
+
+
+# Preload configuration for provider selection and other consumers
+JOB_CONFIG: Dict[str, Any] = load_config()
 
 logger = logging.getLogger("jobs.eod_snapshot")
 
@@ -32,10 +48,15 @@ PRUNE_DAYS = 90
 FAILURE_THRESHOLD = 3
 FAILURE_WINDOW_DAYS = 30
 
+_FETCH_SEMAPHORE = asyncio.Semaphore(5)
+_FETCH_INFLIGHT: Dict[Tuple[str, str], asyncio.Task] = {}
+_FETCH_INFLIGHT_LOCK = asyncio.Lock()
+
 
 def ensure_directories() -> None:
     SNAPSHOT_DB.parent.mkdir(parents=True, exist_ok=True)
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    SNAPSHOT_CHECKSUM_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
@@ -44,6 +65,9 @@ def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
         CREATE TABLE IF NOT EXISTS ticker_ohlc (
             symbol TEXT,
             date DATE,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
             close DOUBLE,
             volume DOUBLE,
             dollar_volume DOUBLE,
@@ -51,6 +75,18 @@ def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    try:
+        conn.execute("ALTER TABLE ticker_ohlc ADD COLUMN open DOUBLE")
+    except duckdb.Error:
+        pass
+    try:
+        conn.execute("ALTER TABLE ticker_ohlc ADD COLUMN high DOUBLE")
+    except duckdb.Error:
+        pass
+    try:
+        conn.execute("ALTER TABLE ticker_ohlc ADD COLUMN low DOUBLE")
+    except duckdb.Error:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS ticker_metrics (
@@ -94,6 +130,24 @@ def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
             symbol TEXT PRIMARY KEY,
             failure_count INTEGER,
             last_failure TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sector_definitions (
+            sector_id TEXT PRIMARY KEY,
+            name TEXT,
+            sort_order INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sectors_map (
+            sector_id TEXT,
+            symbol TEXT,
+            PRIMARY KEY (sector_id, symbol)
         )
         """
     )
@@ -172,7 +226,109 @@ def determine_inactive(state: Dict[str, Dict[str, object]]) -> Set[str]:
     return inactive
 
 
-def load_base_sectors() -> List[SectorIn]:
+def _fsync_directory(path: Path) -> None:
+    flags = getattr(os, "O_RDONLY", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= getattr(os, "O_DIRECTORY")
+    try:
+        dir_fd = os.open(str(path), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def _configured_snapshot_tmp_dir() -> Optional[Path]:
+    try:
+        config = load_config()
+    except Exception as exc:  # pragma: no cover - config failures logged elsewhere
+        logger.debug("Failed to load config while resolving snapshot tmp dir: %s", exc)
+        return None
+    snapshot_cfg = config.get("snapshot")
+    if isinstance(snapshot_cfg, dict):
+        raw_path = snapshot_cfg.get("tmp_dir")
+        if isinstance(raw_path, str) and raw_path.strip():
+            return Path(raw_path.strip())
+    return None
+
+
+def _ensure_writable_dir(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.debug("Unable to create snapshot tmp dir %s: %s", path, exc)
+        return False
+    try:
+        fd, check_path = tempfile.mkstemp(dir=str(path))
+    except OSError as exc:
+        logger.debug("Snapshot tmp dir %s not writable: %s", path, exc)
+        return False
+    finally:
+        if "fd" in locals():
+            os.close(fd)
+        if "check_path" in locals():
+            try:
+                os.remove(check_path)
+            except OSError:
+                pass
+    return True
+
+
+def _resolve_snapshot_tmp_dir() -> Path:
+    candidates: List[Path] = []
+    env_tmp = os.environ.get("SNAPSHOT_TMP_DIR")
+    if env_tmp:
+        candidates.append(Path(env_tmp))
+    configured_tmp = _configured_snapshot_tmp_dir()
+    if configured_tmp and configured_tmp not in candidates:
+        candidates.append(configured_tmp)
+    inherited_tmp = os.environ.get("TMPDIR")
+    if inherited_tmp:
+        candidates.append(Path(inherited_tmp))
+    candidates.append(Path("var/tmp"))
+
+    for candidate in candidates:
+        if _ensure_writable_dir(candidate):
+            return candidate
+
+    fallback = Path("var/tmp")
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+def _atomic_write(path: Path, data: bytes, temp_dir: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=f"{path.name}.", dir=str(temp_dir))
+    try:
+        with os.fdopen(fd, "wb") as tmp_file:
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        os.replace(tmp_path, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def persist_snapshot(payload: Dict[str, Any], targets: Sequence[Path]) -> None:
+    json_bytes = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    checksum = hashlib.sha256(json_bytes).hexdigest().encode("ascii") + b"\n"
+    temp_dir = _resolve_snapshot_tmp_dir()
+    for target in targets:
+        _atomic_write(target, json_bytes, temp_dir)
+        checksum_path = SNAPSHOT_CHECKSUM_DIR / f"{target.name}.sha256"
+        _atomic_write(checksum_path, checksum, temp_dir)
+
+
+def _load_sectors_from_json() -> List[SectorIn]:
     if not SECTOR_BASE_PATH.exists():
         logger.warning("Base sector definition file missing at %s", SECTOR_BASE_PATH)
         return []
@@ -194,6 +350,99 @@ def load_base_sectors() -> List[SectorIn]:
             sectors.append(SectorIn(**entry))
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Skipping malformed sector entry %s: %s", entry, exc)
+    return sectors
+
+
+def bootstrap_sector_membership(conn: duckdb.DuckDBPyConnection) -> None:
+    try:
+        defs_count = conn.execute("SELECT COUNT(*) FROM sector_definitions").fetchone()[0]
+        map_count = conn.execute("SELECT COUNT(*) FROM sectors_map").fetchone()[0]
+    except duckdb.Error as exc:
+        logger.error("Unable to inspect sector tables for bootstrap: %s", exc)
+        return
+    if int(defs_count or 0) > 0 or int(map_count or 0) > 0:
+        return
+
+    sectors = _load_sectors_from_json()
+    if not sectors:
+        logger.warning("Sector tables empty but no JSON bootstrap data available.")
+        return
+
+    conn.execute("BEGIN")
+    try:
+        for index, sector in enumerate(sectors):
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO sector_definitions (sector_id, name, sort_order)
+                VALUES (?, ?, ?)
+                """,
+                (sector.id, sector.name, index),
+            )
+            for ticker in sector.tickers:
+                symbol = str(ticker).strip().upper()
+                if not symbol:
+                    continue
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO sectors_map (sector_id, symbol)
+                    VALUES (?, ?)
+                    """,
+                    (sector.id, symbol),
+                )
+        conn.execute("COMMIT")
+        logger.info("Bootstrapped %d sector definitions from JSON.", len(sectors))
+    except duckdb.Error as exc:
+        conn.execute("ROLLBACK")
+        logger.error("Failed to bootstrap sector definitions: %s", exc)
+
+
+def load_base_sectors(conn: duckdb.DuckDBPyConnection) -> List[SectorIn]:
+    try:
+        definitions = conn.execute(
+            """
+            SELECT sector_id, name, sort_order
+            FROM sector_definitions
+            ORDER BY sort_order ASC NULLS LAST, sector_id
+            """
+        ).fetchall()
+    except duckdb.Error as exc:
+        logger.error("Failed to load sector definitions from DuckDB: %s", exc)
+        return []
+
+    if not definitions:
+        return []
+
+    members_by_sector: Dict[str, List[str]] = {str(sector_id): [] for sector_id, _, _ in definitions}
+    try:
+        rows = conn.execute(
+            """
+            SELECT sector_id, symbol
+            FROM sectors_map
+            ORDER BY sector_id, symbol
+            """
+        ).fetchall()
+    except duckdb.Error as exc:
+        logger.error("Failed to load sector membership from DuckDB: %s", exc)
+        rows = []
+
+    for sector_id, symbol in rows:
+        if sector_id is None or symbol is None:
+            continue
+        sector_key = str(sector_id)
+        if sector_key not in members_by_sector:
+            continue
+        cleaned = str(symbol).strip().upper()
+        if not cleaned:
+            continue
+        members = members_by_sector[sector_key]
+        if cleaned not in members:
+            members.append(cleaned)
+
+    sectors: List[SectorIn] = []
+    for sector_id, name, _ in definitions:
+        key = str(sector_id)
+        display_name = str(name) if name is not None else key
+        sectors.append(SectorIn(id=key, name=display_name, tickers=members_by_sector.get(key, [])))
     return sectors
 
 
@@ -220,10 +469,30 @@ def collect_tickers(
 
 
 async def fetch_symbol_history(
-    provider: YFinanceProvider, symbol: str, seed: bool
+    provider: MarketData, symbol: str, seed: bool
 ) -> List[Dict[str, object]]:
     period = FETCH_PERIOD_SEED if seed else FETCH_PERIOD_DAILY
-    return await provider.get_ohlc(symbol, period=period, interval="1d")
+    symbol_key = symbol.strip().upper()
+    inflight_key = (symbol_key, period)
+
+    async with _FETCH_INFLIGHT_LOCK:
+        task = _FETCH_INFLIGHT.get(inflight_key)
+        if task is None or task.done():
+            async def _runner() -> List[Dict[str, object]]:
+                async with _FETCH_SEMAPHORE:
+                    return await provider.get_ohlc(symbol_key, period=period, interval="1d")
+
+            task = asyncio.create_task(_runner())
+            _FETCH_INFLIGHT[inflight_key] = task
+
+    try:
+        return await task
+    finally:
+        if task.done():
+            async with _FETCH_INFLIGHT_LOCK:
+                current = _FETCH_INFLIGHT.get(inflight_key)
+                if current is task:
+                    _FETCH_INFLIGHT.pop(inflight_key, None)
 
 
 def upsert_ohlc_rows(
@@ -231,6 +500,9 @@ def upsert_ohlc_rows(
 ) -> None:
     for row in rows:
         date_value = row.get("Date") or row.get("date")
+        open_px = row.get("Open") or row.get("open")
+        high_px = row.get("High") or row.get("high")
+        low_px = row.get("Low") or row.get("low")
         close = row.get("Close") or row.get("close")
         volume = row.get("Volume") or row.get("volume")
         if close is None or volume is None:
@@ -245,6 +517,9 @@ def upsert_ohlc_rows(
             except Exception:
                 continue
         try:
+            open_val = float(open_px) if open_px is not None else None
+            high_val = float(high_px) if high_px is not None else None
+            low_val = float(low_px) if low_px is not None else None
             close_val = float(close)
             volume_val = float(volume)
         except (TypeError, ValueError):
@@ -252,10 +527,28 @@ def upsert_ohlc_rows(
         dollar_volume = close_val * volume_val
         conn.execute(
             """
-            INSERT OR REPLACE INTO ticker_ohlc (symbol, date, close, volume, dollar_volume)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO ticker_ohlc (
+                symbol,
+                date,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                dollar_volume
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (symbol, date_obj, close_val, volume_val, dollar_volume),
+            (
+                symbol,
+                date_obj,
+                open_val,
+                high_val,
+                low_val,
+                close_val,
+                volume_val,
+                dollar_volume,
+            ),
         )
 
 
@@ -457,13 +750,14 @@ async def build_snapshot() -> None:
     ensure_directories()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    provider = YFinanceProvider()
+    provider = get_provider(JOB_CONFIG)
     conn = duckdb.connect(str(SNAPSHOT_DB))
     ensure_tables(conn)
+    bootstrap_sector_membership(conn)
     failure_state = load_failure_state(conn)
     inactive_symbols = determine_inactive(failure_state)
 
-    base_sectors = load_base_sectors()
+    base_sectors = load_base_sectors(conn)
     tickers = collect_tickers(base_sectors, conn)
     if not tickers:
         logger.warning("No tickers available for snapshot generation.")
@@ -573,8 +867,7 @@ async def build_snapshot() -> None:
     }
 
     dated_json = SNAPSHOT_DIR / f"sectors_volume_{snapshot_date.isoformat()}.json"
-    dated_json.write_text(json.dumps(payload, indent=2, sort_keys=True))
-    LATEST_SNAPSHOT_JSON.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    persist_snapshot(payload, (dated_json, LATEST_SNAPSHOT_JSON))
 
     conn.execute(
         """
@@ -585,6 +878,11 @@ async def build_snapshot() -> None:
     )
 
     conn.close()
+    aclose = getattr(provider, "aclose", None)
+    if callable(aclose):
+        result = aclose()
+        if asyncio.iscoroutine(result):
+            await result
     logger.info(
         "Snapshot complete for %s: %d tickers, %d default sectors",
         snapshot_date.isoformat(),

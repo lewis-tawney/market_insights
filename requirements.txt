@@ -7,15 +7,15 @@ pandas==2.3.1
 numpy==2.0.2
 pyarrow>=16.1
 
-# Market data providers
-yfinance==0.2.66
-
 # Configuration
 PyYAML==6.0.2
 
 # HTTP client
 httpx==0.28.1
 requests==2.32.3
+
+# Market data client
+massive>=1.0.0
 
 # Type hints and validation
 pydantic==2.11.7
@@ -25,6 +25,7 @@ typing_extensions==4.13.2
 # Utilities
 python-dateutil==2.9.0.post0
 pytz==2025.2
+python-dotenv==1.0.0
 
 # Charts were rendered in the frontend; no Python chart packages required.
 

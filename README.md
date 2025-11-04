@@ -48,7 +48,8 @@ A FastAPI-based financial market analysis system that provides real-time market 
 4. **Configure the application**
    ```bash
    cp config.example.yaml config.yaml
-   # Edit config.yaml with your preferences (optional)
+   cp .env.example .env
+   # Edit config.yaml as needed and set MASSIVE_API_KEY in .env
    ```
 
 5. **Run the application**
@@ -125,6 +126,20 @@ market_strength:
       vix_pop_pct: 5.0
     # ... more thresholds
 ```
+
+### Massive market data provider
+
+- Copy `.env.example` to `.env` and set `MASSIVE_API_KEY=<your key>` before starting the API. Massive is now the only supported data source.
+- Optional overrides: `MASSIVE_BASE_URL` (defaults to `https://api.massive.com`) and `MASSIVE_HTTP_TIMEOUT` (seconds, defaults to `10`).
+- The `providers` section in `config.yaml` ships with `default: "massive"` and expects `providers.massive.enabled: true`. Update the retry/timeout values as needed for your quota tier.
+
+### Snapshot temp directory
+
+End-of-day snapshot jobs write intermediate files to a temporary directory. The resolver checks `SNAPSHOT_TMP_DIR`, then `TMPDIR`, and finally falls back to `./var/tmp` (created on demand). You can also set `snapshot.tmp_dir` in `config.yaml`. When running in CI or Docker, make sure one of these locations is writable or override `SNAPSHOT_TMP_DIR` to a mounted path.
+
+### Sector membership storage
+
+Sector membership definitions are persisted inside DuckDB. The EOD snapshot job seeds `sector_definitions` and `sectors_map` from `config/sectors_snapshot_base.json` on the first run if the tables are empty. Subsequent runs read solely from DuckDB, so update membership by modifying those tables (for example via DuckDB CLI) rather than editing the JSON seed file.
 
 ## 🐳 Docker Deployment
 
@@ -249,7 +264,7 @@ For questions or issues:
 - [ ] Additional technical indicators
 - [ ] Portfolio analysis capabilities
 - [ ] Historical backtesting
-- [ ] More data providers (Polygon, Alpha Vantage)
+- [ ] More data providers (Massive, Alpha Vantage)
 - [ ] Authentication and user management
 ## Frontend + Nginx quickstart
 

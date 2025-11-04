@@ -28,4 +28,8 @@ fi
 
 # Start the application in development mode
 echo "Starting development server..."
+ENV_FILE=".env"
+if [ -f "$ENV_FILE" ]; then
+    echo "Found $ENV_FILE - app will load it automatically on startup"
+fi
 exec uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

@@ -26,7 +26,6 @@ def setup_logging(config: Dict[str, Any]) -> None:
     logging.getLogger("fastapi").setLevel(logging.INFO)
 
     # Reduce noise from external libraries
-    # yfinance logging removed as yfinance has been disabled
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("requests").setLevel(logging.WARNING)
 

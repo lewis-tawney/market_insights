@@ -33,7 +33,11 @@ export type LeaderboardRow = {
   };
 };
 
-export type LeaderboardSortKey = "relVol10" | "oneDayChange" | "fiveDayChange";
+export type LeaderboardSortKey =
+  | "relVol10"
+  | "oneDayChange"
+  | "fiveDayChange"
+  | "volumeMomentum";
 export type LeaderboardSortDirection = "asc" | "desc";
 export type LeaderboardSortPreset = {
   key: LeaderboardSortKey;
@@ -310,6 +314,8 @@ function accessorFactory(key: LeaderboardSortKey) {
         return toFinite(row.metrics.oneDayChange);
       case "fiveDayChange":
         return toFinite(row.metrics.fiveDayChange);
+      case "volumeMomentum":
+        return toFinite(row.metrics.volumeMomentum);
       default:
         return null;
     }
@@ -318,10 +324,14 @@ function accessorFactory(key: LeaderboardSortKey) {
 
 export function sortLeaderboardRows(
   rows: LeaderboardRow[],
-  preset: LeaderboardSortPreset
+  preset: LeaderboardSortPreset | LeaderboardSortKey
 ): LeaderboardRow[] {
-  const accessor = accessorFactory(preset.key);
-  const direction = preset.direction ?? "desc";
+  const config: LeaderboardSortPreset =
+    typeof preset === "string"
+      ? { key: preset, direction: "desc" }
+      : preset;
+  const accessor = accessorFactory(config.key);
+  const direction = config.direction ?? "desc";
   const factor = direction === "asc" ? 1 : -1;
 
   return [...rows].sort((a, b) => {

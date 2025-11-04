@@ -1,11 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchSectorVolumeAggregate,
   fetchSnapshotHealth,
+  addSectorTicker,
+  removeSectorTicker,
+  fetchTaskStatus,
   type SectorIn,
   type SectorVolumeDTO,
   type SnapshotHealthSummary,
   type TickerMetricDTO,
+  type TaskStatusResponse,
 } from "../lib/api";
 
 type SortKey = "oneDayChange" | "fiveDayChange" | "relVol10";
@@ -22,6 +26,8 @@ type TickerSortPreset = {
   direction: SortDirection;
 };
 
+type ViewMode = "sectors" | "stocks";
+
 type DecoratedSector = SectorVolumeDTO & {
   fiveDayChange: number | null;
 };
@@ -30,8 +36,21 @@ type DecoratedTicker = TickerMetricDTO & {
   change5d: number | null;
 };
 
+type StockRow = DecoratedTicker & {
+  sectorId: string;
+  sectorName: string;
+};
+
 const SECTOR_STORAGE_KEY = "market-insights:sector-definitions";
-const TICKER_PATTERN = /^[A-Z0-9.\-]{1,10}$/;
+const TICKER_PATTERN = /^[A-Z0-9.-]{1,10}$/;
+
+type PendingMutation = {
+  taskId: string;
+  status: "pending" | "failed";
+  message?: string;
+  action: "add" | "remove";
+  symbol?: string;
+};
 
 function normalizeTickerInput(value: string): string {
   return value.replace(/\s+/g, "").toUpperCase();
@@ -244,12 +263,21 @@ function SectorWatchlist(): React.ReactElement {
   const [snapshotMeta, setSnapshotMeta] = useState<SnapshotHealthSummary | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [filterTerm, setFilterTerm] = useState("");
+  const [activeView, setActiveView] = useState<ViewMode>("sectors");
   const [sortPreset, setSortPreset] = useState<SortPreset>({ key: "oneDayChange", direction: "desc" });
   const [selectedSectorId, setSelectedSectorId] = useState<string | null>(null);
   const [tickerSort, setTickerSort] = useState<TickerSortPreset>({ key: "change1d", direction: "desc" });
   const [isEditing, setIsEditing] = useState(false);
   const [newTickerInput, setNewTickerInput] = useState("");
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [pendingTasks, setPendingTasks] = useState<Record<string, PendingMutation>>({});
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     definitionsRef.current = sectorDefinitions;
@@ -429,6 +457,8 @@ function SectorWatchlist(): React.ReactElement {
     return sectorDefinitions.find((sector) => sector.id === selectedSectorId) ?? null;
   }, [sectorDefinitions, selectedSectorId]);
 
+  const selectedPending = selectedSectorId ? pendingTasks[selectedSectorId] : undefined;
+
   const selectedTickers: DecoratedTicker[] = useMemo(() => {
     if (!selectedSector) {
       return [];
@@ -436,31 +466,54 @@ function SectorWatchlist(): React.ReactElement {
     return selectedSector.members_detail.map(decorateTicker);
   }, [selectedSector]);
 
-  const sortedTickers = useMemo(() => {
-    if (!selectedTickers.length) {
+  const stockRows: StockRow[] = useMemo(() => {
+    if (!sectors.length) {
       return [];
     }
+    return sectors.flatMap((sector) =>
+      sector.members_detail.map((metric) => ({
+        ...decorateTicker(metric),
+        sectorId: sector.id,
+        sectorName: sector.name,
+      })),
+    );
+  }, [sectors]);
+
+  const filteredStockRows = useMemo(() => {
+    const term = filterTerm.trim().toLowerCase();
+    if (!term) {
+      return stockRows;
+    }
+    return stockRows.filter((row) => {
+      return (
+        row.ticker.toLowerCase().includes(term) ||
+        row.sectorName.toLowerCase().includes(term)
+      );
+    });
+  }, [stockRows, filterTerm]);
+
+  const tickerComparator = useMemo(() => {
     const factor = tickerSort.direction === "asc" ? 1 : -1;
-    return [...selectedTickers].sort((a, b) => {
+    const accessor = (item: DecoratedTicker): number | null => {
+      switch (tickerSort.key) {
+        case "change1d":
+          return item.change1d ?? null;
+        case "change5d":
+          return item.change5d ?? null;
+        case "relVol10":
+          return item.relVol10 ?? null;
+        case "dollarVolToday":
+          return item.dollarVolToday ?? null;
+        case "avgDollarVol10":
+          return item.avgDollarVol10 ?? null;
+        default:
+          return null;
+      }
+    };
+    return (a: DecoratedTicker, b: DecoratedTicker) => {
       if (tickerSort.key === "ticker") {
         return factor * a.ticker.localeCompare(b.ticker);
       }
-      const accessor = (item: DecoratedTicker): number | null => {
-        switch (tickerSort.key) {
-          case "change1d":
-            return item.change1d ?? null;
-          case "change5d":
-            return item.change5d ?? null;
-          case "relVol10":
-            return item.relVol10 ?? null;
-          case "dollarVolToday":
-            return item.dollarVolToday ?? null;
-          case "avgDollarVol10":
-            return item.avgDollarVol10 ?? null;
-          default:
-            return null;
-        }
-      };
       const valueA = accessor(a);
       const valueB = accessor(b);
       if (valueA === null && valueB === null) {
@@ -476,12 +529,32 @@ function SectorWatchlist(): React.ReactElement {
         return factor * (valueA - valueB);
       }
       return a.ticker.localeCompare(b.ticker);
-    });
-  }, [selectedTickers, tickerSort]);
+    };
+  }, [tickerSort]);
+
+  const sortedTickers = useMemo(() => {
+    if (!selectedTickers.length) {
+      return [];
+    }
+    return [...selectedTickers].sort(tickerComparator);
+  }, [selectedTickers, tickerComparator]);
+
+  const sortedStockRows = useMemo(() => {
+    if (!filteredStockRows.length) {
+      return [];
+    }
+    return [...filteredStockRows].sort(tickerComparator);
+  }, [filteredStockRows, tickerComparator]);
 
   const trackedTickerCount = useMemo(() => {
     return sectors.reduce((acc, sector) => acc + sector.members.length, 0);
   }, [sectors]);
+
+  const refreshSnapshot = useCallback(() => {
+    definitionsRef.current = null;
+    setSectorDefinitions(null);
+    setRefreshKey((value) => value + 1);
+  }, [setSectorDefinitions, setRefreshKey]);
 
   const handleSortToggle = (key: SortKey) => {
     setSortPreset((prev) => {
@@ -502,8 +575,70 @@ function SectorWatchlist(): React.ReactElement {
   };
 
   const handleRefresh = () => {
-    setRefreshKey((value) => value + 1);
+    refreshSnapshot();
   };
+
+  const startTaskPolling = useCallback(
+    (sectorId: string, taskId: string) => {
+      let delay = 750;
+
+      const poll = async (): Promise<void> => {
+        while (isMountedRef.current) {
+          try {
+            const status: TaskStatusResponse = await fetchTaskStatus(taskId);
+            if (status.status === "succeeded") {
+              setPendingTasks((prev) => {
+                const next = { ...prev };
+                delete next[sectorId];
+                return next;
+              });
+              setMutationError(null);
+              refreshSnapshot();
+              return;
+            }
+            if (status.status === "failed") {
+              const message =
+                typeof status.message === "string" && status.message.trim()
+                  ? status.message.trim()
+                  : "Sector update failed.";
+              setPendingTasks((prev) => ({
+                ...prev,
+                [sectorId]: {
+                  ...(prev[sectorId] ?? { taskId, action: "add" as const }),
+                  taskId,
+                  status: "failed",
+                  message,
+                },
+              }));
+              setMutationError(message);
+              return;
+            }
+          } catch (error: any) {
+            const message =
+              typeof error?.message === "string" && error.message.trim()
+                ? error.message.trim()
+                : "Sector update failed.";
+            setPendingTasks((prev) => ({
+              ...prev,
+              [sectorId]: {
+                ...(prev[sectorId] ?? { taskId, action: "add" as const }),
+                taskId,
+                status: "failed",
+                message,
+              },
+            }));
+            setMutationError(message);
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          delay = Math.min(delay * 1.5, 5000);
+        }
+      };
+
+      void poll();
+    },
+    [refreshSnapshot],
+  );
 
   const toggleEditing = () => {
     if (!selectedSector || !sectorDefinitions) {
@@ -520,7 +655,7 @@ function SectorWatchlist(): React.ReactElement {
     }
   };
 
-  const handleAddTickerSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleAddTickerSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     if (!isEditing) {
@@ -532,7 +667,7 @@ function SectorWatchlist(): React.ReactElement {
       return;
     }
 
-    if (!sectorDefinitions || !selectedSectorDefinition) {
+    if (!selectedSector || !selectedSectorId) {
       setMutationError("Select a sector to add tickers.");
       return;
     }
@@ -548,35 +683,47 @@ function SectorWatchlist(): React.ReactElement {
       return;
     }
 
-    const sector = sectorDefinitions.find((item) => item.id === selectedSectorDefinition.id);
-    if (!sector) {
-      setMutationError("Unable to locate the selected sector definition.");
+    if (selectedSector.members.some((ticker) => ticker.toUpperCase() === normalized)) {
+      setMutationError(`${normalized} already tracked in ${selectedSector.name}.`);
       return;
     }
 
-    if (sector.tickers.some((ticker) => ticker.toUpperCase() === normalized)) {
-      setMutationError(`${normalized} already tracked in ${sector.name}.`);
+    const existing = pendingTasks[selectedSectorId];
+    if (existing?.status === "pending") {
+      setMutationError("A sector update is already in progress.");
       return;
     }
 
-    const updated = sectorDefinitions.map((item) => {
-      if (item.id !== sector.id) {
-        return item;
-      }
-      return {
-        ...item,
-        tickers: [...item.tickers, normalized],
-      };
-    });
-
-    setMutationError(null);
-    setNewTickerInput("");
-    setSectorDefinitions(updated);
-    setRefreshKey((value) => value + 1);
+    try {
+      setPendingTasks((prev) => {
+        const next = { ...prev };
+        delete next[selectedSectorId];
+        return next;
+      });
+      setMutationError(null);
+      const { task_id } = await addSectorTicker(selectedSectorId, normalized);
+      setPendingTasks((prev) => ({
+        ...prev,
+        [selectedSectorId]: {
+          taskId: task_id,
+          status: "pending",
+          action: "add",
+          symbol: normalized,
+        },
+      }));
+      setNewTickerInput("");
+      startTaskPolling(selectedSectorId, task_id);
+    } catch (error: any) {
+      const message =
+        typeof error?.message === "string" && error.message.trim()
+          ? error.message.trim()
+          : "Unable to add ticker.";
+      setMutationError(message);
+    }
   };
 
-  const handleRemoveTicker = (tickerSymbol: string) => {
-    if (!isEditing || loading || !sectorDefinitions || !selectedSectorDefinition) {
+  const handleRemoveTicker = async (tickerSymbol: string) => {
+    if (!isEditing || loading || !selectedSector || !selectedSectorId) {
       return;
     }
 
@@ -585,29 +732,42 @@ function SectorWatchlist(): React.ReactElement {
       return;
     }
 
-    const sector = sectorDefinitions.find((item) => item.id === selectedSectorDefinition.id);
-    if (!sector) {
+    if (!selectedSector.members.some((ticker) => ticker.toUpperCase() === normalized)) {
+      setMutationError(`${normalized} is not currently tracked in ${selectedSector.name}.`);
       return;
     }
 
-    const filtered = sector.tickers.filter((ticker) => ticker.toUpperCase() !== normalized);
-    if (filtered.length === sector.tickers.length) {
+    const existing = pendingTasks[selectedSectorId];
+    if (existing?.status === "pending") {
+      setMutationError("A sector update is already in progress.");
       return;
     }
 
-    const updated = sectorDefinitions.map((item) => {
-      if (item.id !== sector.id) {
-        return item;
-      }
-      return {
-        ...item,
-        tickers: filtered,
-      };
-    });
-
-    setMutationError(null);
-    setSectorDefinitions(updated);
-    setRefreshKey((value) => value + 1);
+    try {
+      setPendingTasks((prev) => {
+        const next = { ...prev };
+        delete next[selectedSectorId];
+        return next;
+      });
+      setMutationError(null);
+      const { task_id } = await removeSectorTicker(selectedSectorId, normalized);
+      setPendingTasks((prev) => ({
+        ...prev,
+        [selectedSectorId]: {
+          taskId: task_id,
+          status: "pending",
+          action: "remove",
+          symbol: normalized,
+        },
+      }));
+      startTaskPolling(selectedSectorId, task_id);
+    } catch (error: any) {
+      const message =
+        typeof error?.message === "string" && error.message.trim()
+          ? error.message.trim()
+          : "Unable to remove ticker.";
+      setMutationError(message);
+    }
   };
 
   const renderSortableHeader = (label: string, key: SortKey, align: "left" | "right" = "right") => {
@@ -687,14 +847,25 @@ function SectorWatchlist(): React.ReactElement {
             <div className="flex items-center gap-1 rounded-md border border-gray-700 bg-[#1E2937] p-1">
               <button
                 type="button"
-                className="rounded-md px-3 py-1 text-xs font-semibold text-emerald-300"
+                onClick={() => setActiveView("sectors")}
+                aria-pressed={activeView === "sectors"}
+                className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
+                  activeView === "sectors"
+                    ? "bg-gray-900 text-emerald-200 shadow-inner shadow-emerald-900/40"
+                    : "text-gray-500/70 hover:text-gray-300"
+                }`}
               >
                 Sectors
               </button>
               <button
                 type="button"
-                className="rounded-md px-3 py-1 text-xs font-medium text-gray-500/70"
-                disabled
+                onClick={() => setActiveView("stocks")}
+                aria-pressed={activeView === "stocks"}
+                className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
+                  activeView === "stocks"
+                    ? "bg-gray-900 text-emerald-200 shadow-inner shadow-emerald-900/40"
+                    : "text-gray-500/70 hover:text-gray-300"
+                }`}
               >
                 Stocks
               </button>
@@ -718,6 +889,80 @@ function SectorWatchlist(): React.ReactElement {
         <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
           Loading snapshot…
         </div>
+      ) : activeView === "stocks" ? (
+        sortedStockRows.length === 0 ? (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
+            No stocks match your filter. Clear the search to see everything.
+          </div>
+        ) : (
+          <div className="rounded-xl border border-gray-800 bg-[#1E2937] shadow">
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-800">
+                <thead className="bg-[#24344A] text-xs uppercase tracking-wide text-gray-300">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-semibold">
+                      {renderTickerSortableHeader("Ticker", "ticker", "left")}
+                    </th>
+                    <th className="px-4 py-3 text-left font-semibold">Sector</th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      {renderTickerSortableHeader("1D%", "change1d")}
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      {renderTickerSortableHeader("5D%", "change5d")}
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      {renderTickerSortableHeader("RelVol10", "relVol10")}
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      {renderTickerSortableHeader("$Vol Today", "dollarVolToday")}
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      {renderTickerSortableHeader("Avg $Vol10", "avgDollarVol10")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800 bg-[#1E2937]">
+                  {sortedStockRows.map((row) => {
+                    const change1d = formatPercent(row.change1d, 2);
+                    const change5d = formatPercent(row.change5d, 2);
+                    const relVol = formatRelativeVolume(row.relVol10);
+                    return (
+                      <tr
+                        key={`${row.sectorId}-${row.ticker}`}
+                        className="bg-[#1E2937] hover:bg-[#26374D]"
+                      >
+                        <td className="px-4 py-3 font-mono text-sm text-gray-100">
+                          {row.ticker}
+                          {row.inactive ? (
+                            <span className="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-200">
+                              inactive
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-300">{row.sectorName}</td>
+                        <td className={`px-4 py-3 text-right font-mono text-xs ${change1d.tone}`}>
+                          {change1d.text}
+                        </td>
+                        <td className={`px-4 py-3 text-right font-mono text-xs ${change5d.tone}`}>
+                          {change5d.text}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-xs text-gray-200">
+                          {relVol}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-xs text-gray-300">
+                          {formatCompactNumber(row.dollarVolToday)}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-xs text-gray-300">
+                          {formatCompactNumber(row.avgDollarVol10)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
       ) : sortedSectors.length === 0 ? (
         <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
           No sectors match your filter. Clear the search to see everything.
@@ -749,6 +994,7 @@ function SectorWatchlist(): React.ReactElement {
                   const oneDay = formatPercent(oneDayBase, 2);
                   const fiveDay = formatPercent(sector.fiveDayChange, 2);
                   const relVol = formatRelativeVolume(sector.relVol10_median);
+                  const pending = pendingTasks[sector.id];
                   return (
                     <tr
                       key={sector.id}
@@ -758,10 +1004,23 @@ function SectorWatchlist(): React.ReactElement {
                       onClick={() => setSelectedSectorId(sector.id)}
                     >
                       <td className="px-4 py-3">
-                        <div className="flex flex-col">
-                          <span className={`text-sm font-medium ${isSelected ? "text-emerald-200" : "text-gray-200"}`}>
-                            {sector.name}
-                          </span>
+                        <div className="flex flex-col gap-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-sm font-medium ${isSelected ? "text-emerald-200" : "text-gray-200"}`}>
+                              {sector.name}
+                            </span>
+                            {pending ? (
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                  pending.status === "pending"
+                                    ? "bg-emerald-500/20 text-emerald-200"
+                                    : "bg-rose-500/20 text-rose-200"
+                                }`}
+                              >
+                                {pending.status === "pending" ? "Updating…" : "Update failed"}
+                              </span>
+                            ) : null}
+                          </div>
                           <span className="text-xs text-gray-500">{sector.members.length} tickers</span>
                         </div>
                       </td>
@@ -789,7 +1048,7 @@ function SectorWatchlist(): React.ReactElement {
                 <button
                   type="button"
                   onClick={toggleEditing}
-                  disabled={!selectedSectorDefinition || loading}
+                  disabled={!selectedSectorDefinition || loading || selectedPending?.status === "pending"}
                   aria-pressed={isEditing}
                   className={`rounded-md border px-2 py-1 text-xs font-semibold transition ${
                     isEditing
@@ -825,6 +1084,12 @@ function SectorWatchlist(): React.ReactElement {
                 Choose a sector to see its members and snapshot metrics.
               </p>
             )}
+            {selectedPending?.status === "pending" ? (
+              <p className="text-xs font-semibold text-emerald-200">Updating sector membership…</p>
+            ) : null}
+            {selectedPending?.status === "failed" && selectedPending.message ? (
+              <p className="text-xs text-rose-300">{selectedPending.message}</p>
+            ) : null}
 
             {selectedSector ? (
               <div className="space-y-3">
@@ -891,7 +1156,7 @@ function SectorWatchlist(): React.ReactElement {
                                   <button
                                     type="button"
                                     onClick={() => handleRemoveTicker(ticker.ticker)}
-                                    disabled={loading}
+                                    disabled={loading || selectedPending?.status === "pending"}
                                     className="rounded-full border border-gray-600 px-2 py-0.5 text-xs font-semibold text-gray-300 transition hover:border-rose-400 hover:text-rose-200 disabled:cursor-not-allowed disabled:border-gray-800 disabled:text-gray-500"
                                     aria-label={`Remove ${ticker.ticker}`}
                                   >
@@ -919,12 +1184,12 @@ function SectorWatchlist(): React.ReactElement {
                         onChange={handleTickerInputChange}
                         placeholder="Add ticker"
                         className="w-36 rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gray-100 placeholder:font-normal placeholder:text-gray-500 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400"
-                        disabled={!selectedSectorDefinition || loading}
+                        disabled={!selectedSector || loading || selectedPending?.status === "pending"}
                         aria-label="Add ticker to sector"
                       />
                       <button
                         type="submit"
-                        disabled={!selectedSectorDefinition || loading || !newTickerInput}
+                        disabled={!selectedSector || loading || !newTickerInput || selectedPending?.status === "pending"}
                         className="rounded-md border border-emerald-500/60 px-2 py-1 text-xs font-semibold text-emerald-200 transition hover:border-emerald-400 hover:text-white disabled:cursor-not-allowed disabled:border-gray-700 disabled:text-gray-500"
                       >
                         Add
