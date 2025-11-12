@@ -97,6 +97,9 @@ breadth:
 
 breadth_materialize:
   enabled: true
+  # NOTE: These paths reference engine/out/ which is created by engine/jobs/ modules
+  # Currently disabled because engine/jobs/ modules don't exist yet
+  # See Makefile for details on disabled targets
   paths:
     individual: engine/out/fact_breadth_individual.parquet
     events: engine/out/fact_breadth_events.parquet

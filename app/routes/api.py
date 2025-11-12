@@ -307,13 +307,20 @@ _INDIVIDUAL_STOCKS_CACHE: Dict[str, Any] = {"df": None, "ts": 0.0, "etag": None}
 
 
 def _load_individual_stocks_df():
-    """Load individual stocks parquet with caching."""
+    """Load individual stocks parquet with caching.
+    
+    NOTE: This endpoint requires engine/out/individual_stocks.parquet to exist.
+    The Makefile target 'make individual-stocks' is currently disabled because
+    engine/jobs/ modules don't exist yet. This endpoint will return 404 until
+    the data file is generated.
+    """
     path = Path("engine/out/individual_stocks.parquet")
     if not path.exists():
         raise HTTPException(
             status_code=404,
             detail="Individual stocks data not found. "
-            "Run 'make individual-stocks' first.",
+            "The 'make individual-stocks' target is currently disabled. "
+            "See Makefile for details.",
         )
 
     st = path.stat()
