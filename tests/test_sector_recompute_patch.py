@@ -38,12 +38,15 @@ async def test_recompute_sector_matches_aggregate(tmp_path, monkeypatch):
             current_date = start + timedelta(days=offset)
             close = price_base + offset
             volume = 1_000_000 + (offset * 10_000)
+            high = close + 1
+            low = close - 1
+            open_px = close - 0.5
             conn.execute(
                 """
-                INSERT INTO ticker_ohlc (symbol, date, close, volume, dollar_volume)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO ticker_ohlc (symbol, date, open, high, low, close, volume, dollar_volume)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (symbol, current_date, close, volume, close * volume),
+                (symbol, current_date, open_px, high, low, close, volume, close * volume),
             )
 
     metric_bbb = sector_snapshot._compute_metric_from_ohlc(conn, "BBB")
@@ -58,11 +61,15 @@ async def test_recompute_sector_matches_aggregate(tmp_path, monkeypatch):
             rel_vol10,
             change1d,
             change5d,
+            adr20_pct,
             dollar_vol5d,
+            ytd_gain_to_high_pct,
+            ytd_off_high_pct,
+            ralph_score,
             price_history,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """,
         (
             metric_bbb.symbol,
@@ -72,7 +79,11 @@ async def test_recompute_sector_matches_aggregate(tmp_path, monkeypatch):
             metric_bbb.rel_vol10,
             metric_bbb.change1d,
             metric_bbb.change5d,
+            metric_bbb.adr20_pct,
             metric_bbb.dollar_vol5d,
+            metric_bbb.ytd_gain_to_high_pct,
+            metric_bbb.ytd_off_high_pct,
+            metric_bbb.ralph_score,
             json.dumps(metric_bbb.history),
         ),
     )

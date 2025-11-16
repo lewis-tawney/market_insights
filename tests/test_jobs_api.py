@@ -103,12 +103,15 @@ def _seed_sector_data(db_path: Path, sector_id: str, symbols: Optional[list[str]
                 current = start + timedelta(days=offset)
                 close = base_price + offset
                 volume = 1_000_000 + offset * 1000
+                high = close + 1
+                low = close - 1
+                open_px = close - 0.5
                 conn.execute(
                     """
-                    INSERT INTO ticker_ohlc (symbol, date, close, volume, dollar_volume)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO ticker_ohlc (symbol, date, open, high, low, close, volume, dollar_volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (sym, current, close, volume, close * volume),
+                    (sym, current, open_px, high, low, close, volume, close * volume),
                 )
     finally:
         conn.close()

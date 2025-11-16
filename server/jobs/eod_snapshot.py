@@ -24,6 +24,7 @@ from app.services.sector_snapshot import (
     TickerMetric,
     SnapshotNotFoundError,
     aggregate_sectors,
+    compute_ytd_ralph_metrics,
 )
 from engine.providers.base import MarketData
 
@@ -44,7 +45,7 @@ SECTOR_BASE_PATH = Path("config/sectors_snapshot_base.json")
 MIN_HISTORY_DAYS = 11
 FETCH_PERIOD_SEED = "15d"
 FETCH_PERIOD_DAILY = "5d"
-PRUNE_DAYS = 90
+PRUNE_DAYS = 3650  # Keep ~10 years of daily history so Massive backfill stays intact
 FAILURE_THRESHOLD = 3
 FAILURE_WINDOW_DAYS = 30
 
@@ -97,7 +98,11 @@ def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
             rel_vol10 DOUBLE,
             change1d DOUBLE,
             change5d DOUBLE,
+            adr20_pct DOUBLE,
             dollar_vol5d DOUBLE,
+            ytd_gain_to_high_pct DOUBLE,
+            ytd_off_high_pct DOUBLE,
+            ralph_score DOUBLE,
             price_history TEXT,
             updated_at TIMESTAMP
         )
@@ -112,7 +117,23 @@ def ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
     except duckdb.Error:
         pass
     try:
+        conn.execute("ALTER TABLE ticker_metrics ADD COLUMN adr20_pct DOUBLE")
+    except duckdb.Error:
+        pass
+    try:
         conn.execute("ALTER TABLE ticker_metrics ADD COLUMN dollar_vol5d DOUBLE")
+    except duckdb.Error:
+        pass
+    try:
+        conn.execute("ALTER TABLE ticker_metrics ADD COLUMN ytd_gain_to_high_pct DOUBLE")
+    except duckdb.Error:
+        pass
+    try:
+        conn.execute("ALTER TABLE ticker_metrics ADD COLUMN ytd_off_high_pct DOUBLE")
+    except duckdb.Error:
+        pass
+    try:
+        conn.execute("ALTER TABLE ticker_metrics ADD COLUMN ralph_score DOUBLE")
     except duckdb.Error:
         pass
     conn.execute(
@@ -567,7 +588,7 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
     try:
         rows = conn.execute(
             """
-            SELECT date, close, volume, dollar_volume
+            SELECT date, close, volume, dollar_volume, high, low
             FROM ticker_ohlc
             WHERE symbol = ?
             ORDER BY date
@@ -581,10 +602,12 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
         return None
 
     dates: List[str] = []
+    date_objs: List[date] = []
     closes: List[float] = []
     volumes: List[float] = []
     dollar_vols: List[float] = []
-    for date_val, close, volume, dollar_volume in rows:
+    range_ratios: List[float] = []
+    for date_val, close, volume, dollar_volume, high, low in rows:
         if (
             date_val is None
             or close is None
@@ -592,20 +615,35 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
             or volume is None
         ):
             continue
-        if hasattr(date_val, "isoformat"):
-            date_str = date_val.isoformat()
+        if isinstance(date_val, datetime):
+            parsed_date = date_val.date()
+        elif isinstance(date_val, date):
+            parsed_date = date_val
         else:
-            date_str = str(date_val)
+            try:
+                parsed_date = datetime.fromisoformat(str(date_val)).date()
+            except Exception:
+                continue
+        date_objs.append(parsed_date)
+        date_str = parsed_date.isoformat()
         try:
             close_val = float(close)
             volume_val = float(volume)
             dv_val = float(dollar_volume)
+            high_val = float(high) if high is not None else None
+            low_val = float(low) if low is not None else None
         except (TypeError, ValueError):
             continue
         dates.append(date_str)
         closes.append(close_val)
         volumes.append(volume_val)
         dollar_vols.append(dv_val)
+        if high_val is not None and low_val is not None and low_val != 0:
+            ratio = high_val / low_val
+            if ratio > 0:
+                range_ratios.append(ratio)
+
+    ytd_gain, ytd_off, ralph_score = compute_ytd_ralph_metrics(date_objs, closes)
 
     if (
         len(closes) < MIN_HISTORY_DAYS
@@ -655,6 +693,12 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
             }
         )
 
+    adr20_pct = None
+    if len(range_ratios) >= 20:
+        recent = range_ratios[-20:]
+        avg_ratio = sum(recent) / len(recent)
+        adr20_pct = (avg_ratio - 1.0) * 100.0
+
     return TickerMetric(
         symbol=symbol,
         last_date=dates[-1],
@@ -665,6 +709,10 @@ def compute_metrics(conn: duckdb.DuckDBPyConnection, symbol: str) -> Optional[Ti
         change5d=change5d,
         dollar_vol5d=dollar_vol5d,
         history=history_entries,
+        adr20_pct=adr20_pct,
+        ytd_gain_to_high_pct=ytd_gain,
+        ytd_off_high_pct=ytd_off,
+        ralph_score=ralph_score,
     )
 
 
@@ -682,11 +730,15 @@ def upsert_ticker_metrics(
                 rel_vol10,
                 change1d,
                 change5d,
+                adr20_pct,
                 dollar_vol5d,
+                ytd_gain_to_high_pct,
+                ytd_off_high_pct,
+                ralph_score,
                 price_history,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             (
                 metric.symbol,
@@ -696,7 +748,11 @@ def upsert_ticker_metrics(
                 metric.rel_vol10,
                 metric.change1d,
                 metric.change5d,
+                metric.adr20_pct,
                 metric.dollar_vol5d,
+                metric.ytd_gain_to_high_pct,
+                metric.ytd_off_high_pct,
+                metric.ralph_score,
                 json.dumps(metric.history),
             ),
         )
@@ -712,7 +768,11 @@ def serialize_metrics(metrics: Dict[str, TickerMetric]) -> Dict[str, Dict[str, o
             "rel_vol10": metric.rel_vol10,
             "change1d": metric.change1d,
             "change5d": metric.change5d,
+            "adr20_pct": metric.adr20_pct,
             "dollar_vol5d": metric.dollar_vol5d,
+            "ytd_gain_to_high_pct": metric.ytd_gain_to_high_pct,
+            "ytd_off_high_pct": metric.ytd_off_high_pct,
+            "ralph_score": metric.ralph_score,
             "history": metric.history,
         }
     return serialized

@@ -52,6 +52,9 @@ def snapshot_context(tmp_path, monkeypatch) -> Dict[str, Any]:
                     {"date": "2024-01-04", "close": 97.5, "volume": 1100000, "dollarVolume": 107250000},
                     {"date": "2024-01-05", "close": 99.5, "volume": 905000, "dollarVolume": 90000000},
                 ],
+                "ytd_gain_to_high_pct": 25.0,
+                "ytd_off_high_pct": 4.0,
+                "ralph_score": 6.25,
             },
             "BBB": {
                 "last_date": "2024-01-05",
@@ -64,6 +67,24 @@ def snapshot_context(tmp_path, monkeypatch) -> Dict[str, Any]:
                     {"date": "2024-01-04", "close": 44.0, "volume": 520000, "dollarVolume": 22880000},
                     {"date": "2024-01-05", "close": 43.8, "volume": 540000, "dollarVolume": 23652000},
                 ],
+                "ytd_gain_to_high_pct": 10.0,
+                "ytd_off_high_pct": 2.0,
+                "ralph_score": 5.0,
+            },
+            "SPY": {
+                "last_date": "2024-01-05",
+                "dollar_vol_today": 1000000.0,
+                "avg_dollar_vol10": 900000.0,
+                "rel_vol10": 1.1,
+                "change1d": 0.8,
+                "history": [
+                    {"date": "2024-01-03", "close": 470.0, "volume": 2000000, "dollarVolume": 940000000},
+                    {"date": "2024-01-04", "close": 472.0, "volume": 1950000, "dollarVolume": 920400000},
+                    {"date": "2024-01-05", "close": 474.0, "volume": 2100000, "dollarVolume": 995400000},
+                ],
+                "ytd_gain_to_high_pct": 18.0,
+                "ytd_off_high_pct": 3.0,
+                "ralph_score": 6.0,
             },
         },
         "inactive_tickers": [],
@@ -161,6 +182,32 @@ async def test_sectors_volume_rate_limited(snapshot_client):
         retry_after = limited.headers.get("Retry-After")
         assert retry_after is not None
         assert int(retry_after) >= 1
+    finally:
+        app.state.security = original_security
+
+
+@pytest.mark.anyio("asyncio")
+async def test_sectors_ralph_sorted_with_baseline(snapshot_client):
+    original_security = app.state.security
+    app.state.security = SecurityManager(
+        allowed_ips=set(),
+        read_api_token="token123",
+        rate_limit_per_minute=5,
+        burst_size=2,
+    )
+    headers = {"Authorization": "Bearer token123"}
+    try:
+        resp = await snapshot_client.get("/metrics/sectors/ralph", headers=headers)
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert isinstance(payload, list)
+        assert len(payload) >= 2
+        assert payload[0]["symbol"] == "AAA"
+        assert payload[0]["rank"] == 1
+        assert payload[1]["symbol"] == "SPY"
+        assert payload[1]["isBaseline"] is True
+        assert payload[-1]["symbol"] == "BBB"
+        assert payload[-1]["rank"] == len(payload)
     finally:
         app.state.security = original_security
 

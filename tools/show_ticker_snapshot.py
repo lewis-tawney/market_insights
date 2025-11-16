@@ -118,6 +118,7 @@ def main() -> int:
     print(f"Ticker:   {ticker}")
     print(f"Date:     {data.get('last_date', 'n/a')}")
     print(f"1D%:      {fmt_pct(data.get('change1d'))}")
+    print(f"ADR20%:   {fmt_pct(data.get('adr20_pct'))}")
     print(f"RelVol10: {fmt_float(data.get('rel_vol10'))}×")
     print(f"$ Vol:    {fmt_float(data.get('dollar_vol_today'))}")
     print(f"Avg $10:  {fmt_float(data.get('avg_dollar_vol10'))}")

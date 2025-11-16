@@ -26,6 +26,7 @@ typing_extensions==4.13.2
 python-dateutil==2.9.0.post0
 pytz==2025.2
 python-dotenv==1.0.0
+boto3==1.28.9
 
 # Charts were rendered in the frontend; no Python chart packages required.
 

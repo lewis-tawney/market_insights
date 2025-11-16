@@ -82,7 +82,7 @@ def get_daily_eod(symbol: str, start: Optional[Any] = None, end: Optional[Any] =
     sql = " ".join(query)
 
     records: List[Dict[str, Any]] = []
-    conn = duckdb.connect(str(sector_snapshot.SNAPSHOT_DB), read_only=True)
+    conn = duckdb.connect(str(sector_snapshot.SNAPSHOT_DB))
     try:
         rows = conn.execute(sql, params).fetchall()
     except duckdb.Error:

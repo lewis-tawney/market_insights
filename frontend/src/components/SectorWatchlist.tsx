@@ -1,15 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchSectorVolumeAggregate,
+  fetchSectorRalph,
   fetchSnapshotHealth,
   addSectorTicker,
   removeSectorTicker,
   fetchTaskStatus,
+  createSector,
   type SectorIn,
   type SectorVolumeDTO,
   type SnapshotHealthSummary,
   type TickerMetricDTO,
   type TaskStatusResponse,
+  type SectorRalphRow,
 } from "../lib/api";
 
 type SortKey = "oneDayChange" | "fiveDayChange" | "relVol10";
@@ -26,7 +29,14 @@ type TickerSortPreset = {
   direction: SortDirection;
 };
 
-type ViewMode = "sectors" | "stocks";
+type ViewMode = "sectors" | "stocks" | "ralph";
+
+type RalphSortKey = "pctGainToHigh" | "pctOffHigh" | "ralphScore" | "ytdReturn" | "avgDollarVol10";
+
+type RalphSortPreset = {
+  key: RalphSortKey;
+  direction: SortDirection;
+};
 
 type DecoratedSector = SectorVolumeDTO & {
   fiveDayChange: number | null;
@@ -138,6 +148,204 @@ function formatPercent(value: number | null, digits = 2): { text: string; tone: 
   const prefix = value >= 0 ? "+" : "";
   const tone = value >= 0 ? "text-emerald-300" : "text-rose-300";
   return { text: `${prefix}${value.toFixed(digits)}%`, tone };
+}
+
+function formatOffHigh(value: number | null, digits = 2): { text: string; tone: string } {
+  const base = formatPercent(value, digits);
+  if (base.text === "—") {
+    return base;
+  }
+  const withoutSign = base.text.replace(/^(\+|-)*/, "");
+  return {
+    text: `-${withoutSign}`,
+    tone: "text-rose-300",
+  };
+}
+
+function formatRalphScore(value: number | null): string {
+  if (value === null || Number.isNaN(value)) {
+    return "—";
+  }
+  return value.toFixed(1);
+}
+
+const sectorBadgePalette = [
+  "bg-emerald-500/10 border border-emerald-500/30 text-emerald-200",
+  "bg-sky-500/10 border border-sky-500/30 text-sky-200",
+  "bg-violet-500/10 border border-violet-500/30 text-violet-200",
+  "bg-amber-500/10 border border-amber-500/30 text-amber-200",
+  "bg-rose-500/10 border border-rose-500/30 text-rose-200",
+  "bg-indigo-500/10 border border-indigo-500/30 text-indigo-200",
+];
+
+function sectorBadgeClass(sectorId: string | null): string {
+  if (!sectorId) {
+    return "bg-gray-500/10 border border-gray-500/30 text-gray-200";
+  }
+  const hash = [...sectorId].reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return sectorBadgePalette[hash % sectorBadgePalette.length];
+}
+
+function Sparkline({ data }: { data: number[] }): React.ReactElement {
+  if (!data || data.length === 0) {
+    return (
+      <div className="h-6 w-14 text-[11px] text-gray-400 text-center">—</div>
+    );
+  }
+  const width = 56;
+  const height = 18;
+  const values = data.filter((value) => Number.isFinite(value));
+  if (!values.length) {
+    return (
+      <div className="h-6 w-14 text-[11px] text-gray-400 text-center">—</div>
+    );
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max > min ? max - min : 1;
+  const divisor = values.length > 1 ? values.length - 1 : 1;
+  const points = values
+    .map((value, index) => {
+      const normalized = ((value - min) / range) * (height - 2);
+      const x = (index / divisor) * width;
+      const y = height - 1 - normalized;
+      return `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label="price sparkline"
+      className="mx-auto block"
+    >
+      <path
+        d={points}
+        fill="none"
+        stroke="#22C55E"
+        strokeWidth={1.5}
+      />
+    </svg>
+  );
+}
+
+type RalphFiltersProps = {
+  rows: SectorRalphRow[];
+  selectedSectors: string[];
+  setSelectedSectors: (ids: string[]) => void;
+  volumePreset: "all" | "10" | "50" | "200";
+  setVolumePreset: (value: "all" | "10" | "50" | "200") => void;
+  leadersNearHighOnly: boolean;
+  setLeadersNearHighOnly: (value: boolean) => void;
+};
+
+function RalphFilters({
+  rows,
+  selectedSectors,
+  setSelectedSectors,
+  volumePreset,
+  setVolumePreset,
+  leadersNearHighOnly,
+  setLeadersNearHighOnly,
+}: RalphFiltersProps): React.ReactElement {
+  const sectors = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const row of rows) {
+      if (!row.sectorId || !row.name) continue;
+      if (!byId.has(row.sectorId)) {
+        byId.set(row.sectorId, row.name);
+      }
+    }
+    return Array.from(byId.entries()).map(([id, name]) => ({ id, name }));
+  }, [rows]);
+
+  const toggleSector = (id: string) => {
+    setSelectedSectors((prev) =>
+      prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id],
+    );
+  };
+
+  const isAllSectors = selectedSectors.length === 0;
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-b border-gray-800 bg-[#111827] px-4 py-3 text-xs text-gray-300">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+          Sectors
+        </span>
+        <button
+          type="button"
+          onClick={() => setSelectedSectors([])}
+          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            isAllSectors
+              ? "bg-emerald-500/20 text-emerald-200"
+              : "bg-gray-700/40 text-gray-200 hover:bg-gray-600/60"
+          }`}
+        >
+          All
+        </button>
+        {sectors.map((sector) => {
+          const active = selectedSectors.includes(sector.id);
+          return (
+            <button
+              key={sector.id}
+              type="button"
+              onClick={() => toggleSector(sector.id)}
+              className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                active
+                  ? "bg-emerald-500/20 text-emerald-200"
+                  : "bg-gray-700/40 text-gray-200 hover:bg-gray-600/60"
+              }`}
+            >
+              {sector.name}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+          Min Avg $Vol10
+        </span>
+        {[
+          { key: "all", label: "All" },
+          { key: "10", label: ">10M" },
+          { key: "50", label: ">50M" },
+          { key: "200", label: ">200M" },
+        ].map((preset) => (
+          <button
+            key={preset.key}
+            type="button"
+            onClick={() => setVolumePreset(preset.key as RalphFiltersProps["volumePreset"])}
+            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+              volumePreset === preset.key
+                ? "bg-sky-500/20 text-sky-200"
+                : "bg-gray-700/40 text-gray-200 hover:bg-gray-600/60"
+            }`}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setLeadersNearHighOnly(!leadersNearHighOnly)}
+          className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+            leadersNearHighOnly
+              ? "bg-emerald-500/25 text-emerald-200"
+              : "bg-gray-700/40 text-gray-200 hover:bg-gray-600/60"
+          }`}
+        >
+          Leaders near high
+        </button>
+        <span className="text-[11px] text-gray-500">
+          RALPH ≥ 3 and % off high ≤ 10%
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function formatRelativeVolume(value: number | null): string {
@@ -271,7 +479,19 @@ function SectorWatchlist(): React.ReactElement {
   const [newTickerInput, setNewTickerInput] = useState("");
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [pendingTasks, setPendingTasks] = useState<Record<string, PendingMutation>>({});
+  const [ralphRows, setRalphRows] = useState<SectorRalphRow[]>([]);
+  const [ralphLoading, setRalphLoading] = useState(false);
+  const [ralphError, setRalphError] = useState<string | null>(null);
+  const [ralphSort, setRalphSort] = useState<RalphSortPreset>({ key: "ralphScore", direction: "desc" });
+  const [selectedRalphSectors, setSelectedRalphSectors] = useState<string[]>([]);
+  const [volumePreset, setVolumePreset] = useState<"all" | "10" | "50" | "200">("all");
+  const [leadersNearHighOnly, setLeadersNearHighOnly] = useState(false);
   const isMountedRef = useRef(true);
+  const [isCreatingSector, setIsCreatingSector] = useState(false);
+  const [newSectorName, setNewSectorName] = useState("");
+  const [newSectorTickers, setNewSectorTickers] = useState<string[]>([""]);
+  const [creatingSector, setCreatingSector] = useState(false);
+  const [sectorCreationError, setSectorCreationError] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -349,6 +569,60 @@ function SectorWatchlist(): React.ReactElement {
     };
   }, [refreshKey]);
 
+  const closeSectorModal = () => {
+    setIsCreatingSector(false);
+    setNewSectorName("");
+    setNewSectorTickers([""]);
+    setSectorCreationError(null);
+  };
+
+  const addTickerInput = () => {
+    setNewSectorTickers((prev) => [...prev, ""]);
+  };
+
+  const updateTickerInput = (index: number, value: string) => {
+    setNewSectorTickers((prev) => prev.map((ticker, idx) => (idx === index ? value : ticker)));
+  };
+
+  const removeTickerInput = (index: number) => {
+    setNewSectorTickers((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handleCreateSector = async () => {
+    const trimmedName = newSectorName.trim();
+    if (!trimmedName) {
+      setSectorCreationError("Sector name is required.");
+      return;
+    }
+    const cleanedTickers = newSectorTickers
+      .map((ticker) => ticker.trim().toUpperCase())
+      .filter((ticker) => ticker);
+    if (!cleanedTickers.length) {
+      setSectorCreationError("Add at least one ticker.");
+      return;
+    }
+    setCreatingSector(true);
+    setSectorCreationError(null);
+    const derivedId = trimmedName.replace(/\s+/g, "-").toUpperCase();
+    try {
+      const { task_id } = await createSector({
+        id: derivedId,
+        name: trimmedName,
+        tickers: cleanedTickers,
+      });
+      startTaskPolling(derivedId, task_id);
+      closeSectorModal();
+    } catch (error: any) {
+      const message =
+        typeof error?.message === "string" && error.message.trim()
+          ? error.message.trim()
+          : "Unable to create sector.";
+      setSectorCreationError(message);
+    } finally {
+      setCreatingSector(false);
+    }
+  };
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -376,6 +650,43 @@ function SectorWatchlist(): React.ReactElement {
       alive = false;
     };
   }, [refreshKey]);
+
+  useEffect(() => {
+    if (activeView !== "ralph") {
+      return;
+    }
+    let alive = true;
+    setRalphLoading(true);
+    setRalphError(null);
+    (async () => {
+      try {
+        const rows = await fetchSectorRalph();
+        if (!alive) {
+          return;
+        }
+        setRalphRows(rows);
+        setRalphError(null);
+      } catch (error: any) {
+        if (!alive) {
+          return;
+        }
+        const message =
+          typeof error?.message === "string" && error.message.trim()
+            ? error.message.trim()
+            : "Unable to load RALPH data";
+        setRalphRows([]);
+        setRalphError(message);
+      } finally {
+        if (alive) {
+          setRalphLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [activeView, refreshKey]);
 
   useEffect(() => {
     if (!sectors.length) {
@@ -410,6 +721,146 @@ function SectorWatchlist(): React.ReactElement {
       return sector.members.some((member) => member.toLowerCase().includes(term));
     });
   }, [sectors, filterTerm]);
+
+  const computeYtdReturnPct = (row: SectorRalphRow): number | null => {
+    const gain = row.pctGainToHigh;
+    const off = row.pctOffHigh;
+    if (
+      gain === null ||
+      off === null ||
+      Number.isNaN(gain) ||
+      Number.isNaN(off)
+    ) {
+      return null;
+    }
+    const gainFrac = gain / 100;
+    const offFrac = off / 100;
+    const a = 1 + gainFrac;
+    const b = 1 - offFrac;
+    const y = (a * b - 1) * 100;
+    if (!Number.isFinite(y)) {
+      return null;
+    }
+    return y;
+  };
+
+  const filteredRalphRows = useMemo(() => {
+    const term = filterTerm.trim().toUpperCase();
+    const base = term
+      ? ralphRows.filter((row) => {
+          if (row.symbol.includes(term)) {
+            return true;
+          }
+          return row.name.toUpperCase().includes(term);
+        })
+      : ralphRows;
+
+    const sectorFiltered =
+      selectedRalphSectors.length === 0
+        ? base
+        : base.filter((row) => row.sectorId && selectedRalphSectors.includes(row.sectorId));
+
+    const volumeThreshold =
+      volumePreset === "10" ? 10_000_000 : volumePreset === "50" ? 50_000_000 : volumePreset === "200" ? 200_000_000 : 0;
+    const volumeFiltered =
+      volumeThreshold > 0
+        ? sectorFiltered.filter((row) => {
+            if (typeof row.avgDollarVol10 !== "number" || Number.isNaN(row.avgDollarVol10)) {
+              return false;
+            }
+            return row.avgDollarVol10 >= volumeThreshold;
+          })
+        : sectorFiltered;
+
+    const leadersFiltered = leadersNearHighOnly
+      ? volumeFiltered.filter((row) => {
+          const ralph = row.ralphScore;
+          const off = row.pctOffHigh;
+          if (
+            typeof ralph !== "number" ||
+            Number.isNaN(ralph) ||
+            typeof off !== "number" ||
+            Number.isNaN(off)
+          ) {
+            return false;
+          }
+          return ralph >= 3 && off <= 10;
+        })
+      : volumeFiltered;
+
+    return leadersFiltered;
+  }, [filterTerm, ralphRows, selectedRalphSectors, volumePreset, leadersNearHighOnly]);
+
+  const sortedRalphRows = useMemo(() => {
+    if (!filteredRalphRows.length) {
+      return [];
+    }
+    const factor = ralphSort.direction === "desc" ? -1 : 1;
+    const accessor = (row: SectorRalphRow): number | null => {
+      switch (ralphSort.key) {
+        case "pctGainToHigh":
+          return typeof row.pctGainToHigh === "number" ? row.pctGainToHigh : null;
+        case "pctOffHigh":
+          return typeof row.pctOffHigh === "number" ? row.pctOffHigh : null;
+        case "ytdReturn":
+          return computeYtdReturnPct(row);
+        case "avgDollarVol10":
+          return typeof row.avgDollarVol10 === "number" ? row.avgDollarVol10 : null;
+        case "ralphScore":
+        default:
+          return typeof row.ralphScore === "number" ? row.ralphScore : null;
+      }
+    };
+    return [...filteredRalphRows].sort((a, b) => {
+      const aVal = accessor(a);
+      const bVal = accessor(b);
+      if (aVal === null && bVal === null) {
+        return a.symbol.localeCompare(b.symbol);
+      }
+      if (aVal === null) {
+        return 1;
+      }
+      if (bVal === null) {
+        return -1;
+      }
+      if (aVal !== bVal) {
+        return factor * (aVal - bVal);
+      }
+      return a.symbol.localeCompare(b.symbol);
+    });
+  }, [filteredRalphRows, ralphSort]);
+
+  const ralphBounds = useMemo(() => {
+    const values = sortedRalphRows
+      .map((row) => row.ralphScore)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    if (!values.length) {
+      return { min: 0, max: 1 };
+    }
+    return {
+      min: Math.min(...values),
+      max: Math.max(...values),
+    };
+  }, [sortedRalphRows]);
+
+  const rowHighlightStyle = (score: number | null): React.CSSProperties | undefined => {
+    if (score === null || Number.isNaN(score)) {
+      return undefined;
+    }
+    const range = ralphBounds.max - ralphBounds.min || 1;
+    const normalized = Math.max(0, Math.min(1, (score - ralphBounds.min) / range));
+    const intensity = 0.04 + normalized * 0.2;
+    return { backgroundColor: `rgba(16, 185, 129, ${intensity})` };
+  };
+
+  const handleRalphSortToggle = (key: RalphSortKey) => {
+    setRalphSort((prev) => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === "desc" ? "asc" : "desc" };
+      }
+      return { key, direction: "desc" };
+    });
+  };
 
   const sortedSectors = useMemo(() => {
     const accessor = (sector: DecoratedSector): number | null => {
@@ -824,7 +1275,16 @@ function SectorWatchlist(): React.ReactElement {
       <div className="rounded-xl border border-gray-700 bg-[#1E2937] p-4 shadow space-y-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h3 className="text-base font-semibold text-gray-100">Sector Snapshot</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-gray-100">Sector Snapshot</h3>
+              <button
+                type="button"
+                onClick={() => setIsCreatingSector(true)}
+                className="inline-flex items-center justify-center rounded-md border border-gray-600 px-2 py-1 text-xs font-semibold text-gray-200 transition hover:border-gray-500 hover:bg-white/5"
+              >
+                <span className="text-xs font-semibold">+</span>
+              </button>
+            </div>
             <p className="text-xs text-gray-400">
               Tracking {sectors.length} sectors • {trackedTickerCount} tickers.
             </p>
@@ -869,6 +1329,18 @@ function SectorWatchlist(): React.ReactElement {
               >
                 Stocks
               </button>
+              <button
+                type="button"
+                onClick={() => setActiveView("ralph")}
+                aria-pressed={activeView === "ralph"}
+                className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
+                  activeView === "ralph"
+                    ? "bg-gray-900 text-emerald-200 shadow-inner shadow-emerald-900/40"
+                    : "text-gray-500/70 hover:text-gray-300"
+                }`}
+              >
+                RALPH
+              </button>
             </div>
             <button
               type="button"
@@ -881,7 +1353,180 @@ function SectorWatchlist(): React.ReactElement {
         </div>
       </div>
 
-      {error ? (
+      {activeView === "ralph" ? (
+        ralphLoading ? (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
+            Loading RALPH scores…
+          </div>
+        ) : ralphError ? (
+          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+            {ralphError}
+          </div>
+        ) : filteredRalphRows.length === 0 ? (
+          <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-6 text-center text-sm text-gray-400">
+            No RALPH metrics available. Refresh to try again.
+          </div>
+        ) : (
+          <div className="rounded-xl border border-gray-800 bg-[#1E2937] shadow">
+            <div className="border-b border-gray-800 px-4 py-3 text-xs text-gray-400">
+              RALPH (Risk Adjusted Leadership Performance Heuristic) = YTD surge divided by drawdown from the YTD high. Higher is stronger.
+            </div>
+            <RalphFilters
+              rows={ralphRows}
+              selectedSectors={selectedRalphSectors}
+              setSelectedSectors={setSelectedRalphSectors}
+              volumePreset={volumePreset}
+              setVolumePreset={setVolumePreset}
+              leadersNearHighOnly={leadersNearHighOnly}
+              setLeadersNearHighOnly={setLeadersNearHighOnly}
+            />
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-800">
+                <thead className="bg-[#24344A] text-xs uppercase tracking-wide text-gray-300">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-semibold">Rank</th>
+                    <th className="px-4 py-3 text-left font-semibold">Symbol</th>
+                    <th className="px-4 py-3 text-center font-semibold">Sector</th>
+                    <th className="px-4 py-3 text-center font-semibold">YTD Sparkline</th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      <button
+                        type="button"
+                        onClick={() => handleRalphSortToggle("ytdReturn")}
+                        className={`group inline-flex w-full items-center justify-end gap-1 text-[11px] font-semibold transition ${
+                          ralphSort.key === "ytdReturn"
+                            ? "text-emerald-300"
+                            : "text-gray-300 hover:text-gray-100"
+                        }`}
+                      >
+                        <span>YTD %</span>
+                        {ralphSort.key === "ytdReturn" ? (
+                          <SortIndicator active direction={ralphSort.direction} />
+                        ) : null}
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      <button
+                        type="button"
+                        onClick={() => handleRalphSortToggle("pctGainToHigh")}
+                        className={`group inline-flex w-full items-center justify-end gap-1 text-[11px] font-semibold transition ${
+                          ralphSort.key === "pctGainToHigh"
+                            ? "text-emerald-300"
+                            : "text-gray-300 hover:text-gray-100"
+                        }`}
+                      >
+                        <span>YTD → High %</span>
+                        {ralphSort.key === "pctGainToHigh" ? (
+                          <SortIndicator active direction={ralphSort.direction} />
+                        ) : null}
+                      </button>
+                    </th>
+                      <th className="px-4 py-3 text-right font-semibold">
+                        <button
+                          type="button"
+                        onClick={() => handleRalphSortToggle("pctOffHigh")}
+                        className={`group inline-flex w-full items-center justify-end gap-1 text-[11px] font-semibold transition ${
+                          ralphSort.key === "pctOffHigh"
+                            ? "text-emerald-300"
+                            : "text-gray-300 hover:text-gray-100"
+                        }`}
+                      >
+                        <span>% Off High</span>
+                        {ralphSort.key === "pctOffHigh" ? (
+                          <SortIndicator active direction={ralphSort.direction} />
+                        ) : null}
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 text-right font-semibold">
+                      <button
+                        type="button"
+                        onClick={() => handleRalphSortToggle("ralphScore")}
+                        className={`group inline-flex w-full items-center justify-end gap-1 text-[11px] font-semibold transition ${
+                          ralphSort.key === "ralphScore"
+                            ? "text-emerald-300"
+                            : "text-gray-300 hover:text-gray-100"
+                        }`}
+                      >
+                        <span>RALPH</span>
+                        {ralphSort.key === "ralphScore" ? (
+                          <SortIndicator active direction={ralphSort.direction} />
+                        ) : null}
+                      </button>
+                      </th>
+                      <th className="px-4 py-3 text-right font-semibold">
+                        <button
+                          type="button"
+                          onClick={() => handleRalphSortToggle("avgDollarVol10")}
+                          className={`group inline-flex w-full items-center justify-end gap-1 text-[11px] font-semibold transition ${
+                            ralphSort.key === "avgDollarVol10"
+                              ? "text-emerald-300"
+                              : "text-gray-300 hover:text-gray-100"
+                          }`}
+                        >
+                          <span>Avg $Vol10</span>
+                          {ralphSort.key === "avgDollarVol10" ? (
+                            <SortIndicator active direction={ralphSort.direction} />
+                          ) : null}
+                        </button>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                  {sortedRalphRows.map((row) => {
+                    const gain = formatPercent(row.pctGainToHigh ?? null, 0);
+                    const off = formatOffHigh(row.pctOffHigh ?? null, 1);
+                    const ytd = formatPercent(computeYtdReturnPct(row), 0);
+                    const baselineRow = row.isBaseline;
+                    return (
+                      <tr
+                        key={row.symbol}
+                        className={baselineRow ? "text-indigo-100" : "text-gray-100 hover:bg-[#26374D]"}
+                        style={baselineRow ? undefined : rowHighlightStyle(row.ralphScore)}
+                      >
+                        <td className="px-4 py-3 text-sm text-gray-400">{row.rank}</td>
+                        <td className="px-4 py-3 font-mono text-sm">
+                          {row.symbol}
+                          {baselineRow ? (
+                            <span className="ml-2 rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] text-indigo-100">
+                              baseline
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-center">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${sectorBadgeClass(
+                              row.sectorId,
+                            )}`}
+                          >
+                            {row.name}
+                          </span>
+                        </td>
+                        <td className="px-2 py-2 text-center">
+                          <Sparkline data={row.sparklineCloses} />
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm">
+                          <span className={ytd.tone}>{ytd.text}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm">
+                          <span className={gain.tone}>{gain.text}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm">
+                          <span className={off.tone}>{off.text}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm font-semibold text-emerald-200">
+                          {formatRalphScore(row.ralphScore ?? null)}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-300">
+                          {formatCompactNumber(row.avgDollarVol10)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+      ) : error ? (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
           {error}
         </div>
@@ -1204,6 +1849,91 @@ function SectorWatchlist(): React.ReactElement {
                 Select a sector to inspect its members.
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {isCreatingSector && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-lg rounded-2xl border border-gray-700 bg-[#0f172a] p-6 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-gray-100">Create new sector</h3>
+              <button
+                type="button"
+                onClick={closeSectorModal}
+                className="text-gray-400 hover:text-gray-100"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="space-y-4 pt-4">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                  Sector name
+                </label>
+                <input
+                  type="text"
+                  value={newSectorName}
+                  onChange={(event) => setNewSectorName(event.target.value)}
+                  placeholder="e.g., Clean Energy"
+                  className="w-full rounded-md border border-gray-600 bg-gray-900 px-3 py-2 text-sm text-gray-100 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                />
+                <p className="text-[11px] text-gray-500">Sector ID will be derived from the name.</p>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Tickers</span>
+                  <button
+                    type="button"
+                    onClick={addTickerInput}
+                    className="text-xs font-semibold text-emerald-300 underline underline-offset-2"
+                  >
+                    + Add ticker slot
+                  </button>
+                </div>
+                {newSectorTickers.map((ticker, index) => (
+                  <div key={`sector-ticker-${index}`} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={ticker}
+                      onChange={(event) => updateTickerInput(index, event.target.value)}
+                      placeholder="Ticker"
+                      className="flex-1 rounded-md border border-gray-600 bg-gray-900 px-3 py-2 text-sm text-gray-100 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                    />
+                    {newSectorTickers.length > 1 ? (
+                      <button
+                        type="button"
+                        onClick={() => removeTickerInput(index)}
+                        className="text-xs font-semibold text-rose-300"
+                        aria-label="Remove ticker input"
+                      >
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              {sectorCreationError ? (
+                <p className="text-xs text-rose-300">{sectorCreationError}</p>
+              ) : null}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeSectorModal}
+                  className="rounded-md border border-gray-600 px-3 py-2 text-xs font-semibold text-gray-400 hover:border-gray-500"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateSector}
+                  disabled={creatingSector}
+                  className="rounded-md bg-emerald-500 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-emerald-600"
+                >
+                  {creatingSector ? "Saving…" : "Save sector"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

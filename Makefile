@@ -53,4 +53,8 @@ EOD_ARGS ?=
 eod-snapshot:
 	$(PY) -m server.jobs.eod_snapshot $(EOD_ARGS)
 
+.PHONY: massive-backfill
+massive-backfill:
+	$(PY) -m tools.import_massive_daily
+
 # .PHONY: materialize-breadth refresh-breadth individual-stocks individual-stocks-range individual-stocks-test prune-market-data prune-market-data-apply prune-market-data-apply-trim prune-market-data-date-apply relayout-daily

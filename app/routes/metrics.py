@@ -3,15 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Set
 
 import numpy as np
 import pandas as pd  # type: ignore[import]
 from fastapi import APIRouter, Depends, Query, Request, HTTPException, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from pydantic import ValidationError
+
+import duckdb  # type: ignore[import]
 
 from app.schemas.sector_volume import (
     SectorIn,
@@ -20,6 +22,7 @@ from app.schemas.sector_volume import (
     SectorVolumeResponse,
 )
 from app.services.candles_duckdb import get_daily_eod, period_start
+from app.services import sector_snapshot as sector_snapshot_service
 from app.services.sector_snapshot import (
     aggregate_sectors,
     load_latest_metrics_snapshot,
@@ -94,7 +97,27 @@ class TrendLiteDTO(BaseModel):
     above200: Optional[bool] = None
 
 
+class SectorRalphRowDTO(BaseModel):
+    rank: int
+    symbol: str
+    name: str
+    pctGainToHigh: Optional[float] = None
+    pctOffHigh: Optional[float] = None
+    ralphScore: Optional[float] = None
+    sectorId: Optional[str] = None
+    isBaseline: bool = False
+    avgDollarVol10: Optional[float] = None
+    sparklineCloses: List[float] = Field(default_factory=list)
+    avgDollarVol10: Optional[float] = None
+
+
 # ---------------- helpers ----------------
+def _apply_rate_headers(response: JSONResponse, headers: Mapping[str, str]) -> JSONResponse:
+    for header, value in headers.items():
+        response.headers[header] = value
+    return response
+
+
 def _close_series_from_ohlc(records: List[Dict]) -> pd.Series:
     if not records:
         return pd.Series(dtype=float)
@@ -152,6 +175,61 @@ async def _fetch_ohlc(
         start = period_start(period)
         return await asyncio.to_thread(get_daily_eod, symbol, start, None)
     return await provider.get_ohlc(symbol, period=period, interval=interval)
+
+
+def _snapshot_sectors_from_payload(snapshot_payload: Mapping[str, Any]) -> List[SectorIn]:
+    snapshot_sectors = snapshot_payload.get("sectors")
+    if not isinstance(snapshot_sectors, list):
+        return []
+    sector_inputs: List[SectorIn] = []
+    for entry in snapshot_sectors:
+        if not isinstance(entry, dict):
+            continue
+        members = entry.get("members")
+        if not isinstance(members, list):
+            continue
+        sector_id = entry.get("id") or entry.get("name")
+        sector_name = entry.get("name") or entry.get("id") or "Unknown"
+        if not isinstance(sector_id, str):
+            continue
+        tickers: List[str] = [
+            str(symbol).strip().upper()
+            for symbol in members
+            if isinstance(symbol, str) and symbol.strip()
+        ]
+        sector_inputs.append(
+            SectorIn(id=sector_id, name=str(sector_name), tickers=tickers)
+        )
+    return sector_inputs
+
+
+def _sparkline_closes(metric_history: List[Dict[str, Any]], limit: int = 32) -> List[float]:
+    closes: List[float] = []
+    for entry in metric_history:
+        if not isinstance(entry, dict):
+            continue
+        close = entry.get("close")
+        if isinstance(close, (int, float)):
+            closes.append(float(close))
+    return closes[-limit:]
+
+
+def _load_metric_from_db(symbol: str):
+    if not sector_snapshot_service.SNAPSHOT_DB.exists():
+        return None
+    try:
+        conn = duckdb.connect(str(sector_snapshot_service.SNAPSHOT_DB))
+    except duckdb.Error:
+        return None
+    try:
+        return sector_snapshot_service._compute_metric_from_ohlc(conn, symbol)
+    except duckdb.Error:
+        return None
+    finally:
+        try:
+            conn.close()
+        except duckdb.Error:
+            pass
 
 
 async def _compute_trend_lite(request: Request, provider, symbol: str) -> TrendLiteDTO:
@@ -249,20 +327,16 @@ async def sectors_volume(request: Request, payload: Optional[str] = Query(None))
         client_ip=client_ip, token_id=token_id, route="/metrics/sectors/volume"
     )
 
-    def _with_rate_headers(response: JSONResponse) -> JSONResponse:
-        for header, value in rate_headers.items():
-            response.headers[header] = value
-        return response
-
     try:
         metrics_snapshot, inactive_symbols = load_latest_metrics_snapshot()
     except SnapshotNotFoundError:
         logger.error("No sector volume snapshot available; returning 503")
-        return _with_rate_headers(
+        return _apply_rate_headers(
             JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={"detail": "Sector snapshot unavailable"},
-            )
+            ),
+            rate_headers,
         )
 
     try:
@@ -286,41 +360,15 @@ async def sectors_volume(request: Request, payload: Optional[str] = Query(None))
             request_model.sectors, metrics_snapshot, inactive_symbols
         )
     else:
-        snapshot_sectors = snapshot_payload.get("sectors")
-        if not isinstance(snapshot_sectors, list):
-            logger.error("Snapshot payload missing sectors; returning 503")
-            return _with_rate_headers(
-                JSONResponse(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    content={"detail": "Sector snapshot unavailable"},
-                )
-            )
-        sector_inputs: List[SectorIn] = []
-        for entry in snapshot_sectors:
-            if not isinstance(entry, dict):
-                continue
-            members = entry.get("members")
-            if not isinstance(members, list):
-                continue
-            sector_id = entry.get("id") or entry.get("name")
-            sector_name = entry.get("name") or entry.get("id") or "Unknown"
-            if not isinstance(sector_id, str):
-                continue
-            tickers: List[str] = [
-                str(symbol).strip().upper()
-                for symbol in members
-                if isinstance(symbol, str) and symbol.strip()
-            ]
-            sector_inputs.append(
-                SectorIn(id=sector_id, name=str(sector_name), tickers=tickers)
-            )
+        sector_inputs = _snapshot_sectors_from_payload(snapshot_payload)
         if not sector_inputs:
             logger.error("Snapshot payload contains no valid sectors; returning 503")
-            return _with_rate_headers(
+            return _apply_rate_headers(
                 JSONResponse(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     content={"detail": "Sector snapshot unavailable"},
-                )
+                ),
+                rate_headers,
             )
         aggregated = aggregate_sectors(sector_inputs, metrics_snapshot, inactive_symbols)
 
@@ -332,7 +380,7 @@ async def sectors_volume(request: Request, payload: Optional[str] = Query(None))
     if not response_payload.get("members_count"):
         response_payload["members_count"] = sum(len(item.members) for item in aggregated)
 
-    return _with_rate_headers(JSONResponse(content=response_payload))
+    return _apply_rate_headers(JSONResponse(content=response_payload), rate_headers)
 
 
 @router.post("/sectors/volume")
@@ -340,6 +388,109 @@ async def sectors_volume_post_legacy():
     raise HTTPException(
         status_code=410,
         detail="Use GET /metrics/sectors/volume",
+    )
+
+
+@router.get("/sectors/ralph", response_model=List[SectorRalphRowDTO])
+async def sectors_ralph(request: Request):
+    security = request.app.state.security
+    client_ip, token_id = security.authorize(request)
+    rate_headers = security.check_rate_limit(
+        client_ip=client_ip, token_id=token_id, route="/metrics/sectors/ralph"
+    )
+
+    try:
+        metrics_snapshot, inactive_symbols = load_latest_metrics_snapshot()
+    except SnapshotNotFoundError:
+        logger.error("No sector snapshot available for RALPH view; returning 503")
+        return _apply_rate_headers(
+            JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "Sector snapshot unavailable"},
+            ),
+            rate_headers,
+        )
+
+    try:
+        snapshot_payload = load_snapshot_payload()
+    except SnapshotNotFoundError:
+        snapshot_payload = {}
+
+    sector_inputs = _snapshot_sectors_from_payload(snapshot_payload)
+    if not sector_inputs:
+        logger.error("Snapshot payload missing sectors for RALPH view; returning 503")
+        return _apply_rate_headers(
+            JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "Sector snapshot unavailable"},
+            ),
+            rate_headers,
+        )
+
+    symbol_map: Dict[str, SectorIn] = {}
+    for sector in sector_inputs:
+        for member in sector.tickers:
+            symbol = member.strip().upper()
+            if not symbol or symbol in symbol_map:
+                continue
+            symbol_map[symbol] = sector
+
+    rows: List[SectorRalphRowDTO] = []
+    seen: Set[str] = set()
+    for symbol, sector in symbol_map.items():
+        if symbol in inactive_symbols:
+            continue
+        metric = metrics_snapshot.get(symbol)
+        if metric is None:
+            continue
+        rows.append(
+            SectorRalphRowDTO(
+                rank=0,
+                symbol=symbol,
+                name=sector.name,
+                pctGainToHigh=metric.ytd_gain_to_high_pct,
+                pctOffHigh=metric.ytd_off_high_pct,
+                ralphScore=metric.ralph_score,
+                sectorId=sector.id,
+                isBaseline=(symbol == "SPY"),
+                avgDollarVol10=metric.avg_dollar_vol10,
+                sparklineCloses=_sparkline_closes(metric.history),
+            )
+        )
+        seen.add(symbol)
+
+    baseline_symbol = "SPY"
+    if baseline_symbol in seen:
+        for row in rows:
+            if row.symbol == baseline_symbol:
+                row.isBaseline = True
+                break
+    else:
+        baseline_metric = metrics_snapshot.get(baseline_symbol)
+        if baseline_metric is None:
+            baseline_metric = _load_metric_from_db(baseline_symbol)
+        if baseline_metric is not None:
+            rows.append(
+            SectorRalphRowDTO(
+                rank=0,
+                symbol=baseline_symbol,
+                name="S&P 500",
+                pctGainToHigh=baseline_metric.ytd_gain_to_high_pct,
+                pctOffHigh=baseline_metric.ytd_off_high_pct,
+                ralphScore=baseline_metric.ralph_score,
+                sectorId=None,
+                isBaseline=True,
+                sparklineCloses=_sparkline_closes(baseline_metric.history),
+            )
+            )
+
+    rows.sort(key=lambda row: (row.ralphScore is None, -(row.ralphScore or 0.0)))
+    for index, row in enumerate(rows, start=1):
+        row.rank = index
+
+    return _apply_rate_headers(
+        JSONResponse(content=[row.model_dump() for row in rows]),
+        rate_headers,
     )
 
 @router.get("/trend", response_model=TrendDTO)

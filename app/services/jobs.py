@@ -4,19 +4,29 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
+
+import logging
 
 import duckdb  # type: ignore[import]
 
 from app.providers import get_provider
 from app.services import sector_snapshot
+from app.schemas.sector_volume import SectorIn
+from app.services.massive_flatfiles import (
+    backfill_symbols_into_duckdb,
+    create_massive_client,
+)
 from server.jobs import eod_snapshot
 
 JobCallable = Callable[[], Awaitable[Optional[str]]]
 
 QUEUE_CHECK_INTERVAL = 0.05
+MASSIVE_BACKFILL_YEARS = 5
+MASSIVE_CACHE_DIR = Path("var/massive_cache")
+LOGGER = logging.getLogger("jobs.massive")
 
 
 @dataclass
@@ -140,6 +150,23 @@ class JobManager:
             meta={"sector_id": sector_key, "symbol": ticker},
         )
 
+    async def enqueue_create_sector(self, sector: SectorIn) -> str:
+        async def job() -> Optional[str]:
+            lock = sector_snapshot.get_sector_lock(sector.id)
+            async with lock:
+                await asyncio.to_thread(self._persist_sector_definition, sector)
+                for ticker in sector.tickers:
+                    await self._ensure_symbol_data(ticker)
+                row = await asyncio.to_thread(_recompute_sector_sync, sector.id)
+                await sector_snapshot.patch_latest_snapshot(row)
+            return f"created {sector.id}"
+
+        return await self.enqueue(
+            "sector_create",
+            job,
+            meta={"sector_id": sector.id},
+        )
+
     async def get(self, task_id: str) -> Optional[JobRecord]:
         async with self._lock:
             record = self._tasks.get(task_id)
@@ -160,6 +187,53 @@ class JobManager:
 
     def _connect(self) -> duckdb.DuckDBPyConnection:
         return duckdb.connect(str(self._db_path))
+
+    def _backfill_symbol_history(self, symbol: str) -> int:
+        cache_dir = MASSIVE_CACHE_DIR
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        start_date = date.today() - timedelta(days=365 * MASSIVE_BACKFILL_YEARS)
+        end_date = date.today()
+        conn = self._connect()
+        try:
+            eod_snapshot.ensure_tables(conn)
+            client = create_massive_client()
+            inserted = backfill_symbols_into_duckdb(
+                [symbol],
+                start_date,
+                end_date,
+                conn,
+                cache_dir,
+                client=client,
+            )
+            conn.commit()
+            return inserted
+        finally:
+            conn.close()
+
+    def _persist_sector_definition(self, sector: SectorIn) -> None:
+        conn = self._connect()
+        try:
+            max_order = conn.execute(
+                "SELECT MAX(sort_order) FROM sector_definitions"
+            ).fetchone()
+            next_order = (int(max_order[0]) if max_order and max_order[0] is not None else -1) + 1
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO sector_definitions (sector_id, name, sort_order)
+                VALUES (?, ?, ?)
+                """,
+                (sector.id, sector.name, next_order),
+            )
+            for ticker in sector.tickers:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO sectors_map (sector_id, symbol)
+                    VALUES (?, ?)
+                    """,
+                    (sector.id, ticker.strip().upper()),
+                )
+        finally:
+            conn.close()
 
     def _ensure_tables(self) -> None:
         conn = self._connect()
@@ -335,6 +409,11 @@ class JobManager:
 
         existing_rows = await asyncio.to_thread(_current_count)
         seed = existing_rows < eod_snapshot.MIN_HISTORY_DAYS
+        if existing_rows == 0:
+            inserted = await asyncio.to_thread(self._backfill_symbol_history, symbol_key)
+            if inserted:
+                LOGGER.info("Backfilled %d Massive rows for %s", inserted, symbol_key)
+                seed = False
 
         provider = get_provider()
         try:

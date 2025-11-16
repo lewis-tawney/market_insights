@@ -6,10 +6,10 @@ import hashlib
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 try:
     from zoneinfo import ZoneInfo
@@ -70,13 +70,17 @@ class TickerMetric:
     change5d: Optional[float]
     dollar_vol5d: Optional[float]
     history: List[Dict[str, float]]
+    adr20_pct: Optional[float] = None
+    ytd_gain_to_high_pct: Optional[float] = None
+    ytd_off_high_pct: Optional[float] = None
+    ralph_score: Optional[float] = None
 
 
 def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
     if not SNAPSHOT_DB.exists():
         return {}, set()
 
-    conn = duckdb.connect(str(SNAPSHOT_DB), read_only=True)
+    conn = duckdb.connect(str(SNAPSHOT_DB))
     try:
         rows = conn.execute(
             """
@@ -87,7 +91,11 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
                    rel_vol10,
                    change1d,
                    change5d,
+                   adr20_pct,
                    dollar_vol5d,
+                   ytd_gain_to_high_pct,
+                   ytd_off_high_pct,
+                   ralph_score,
                    price_history
             FROM ticker_metrics
             """
@@ -105,7 +113,11 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
         rel_vol10,
         change1d,
         change5d,
+        adr20_pct,
         dollar_vol5d,
+        ytd_gain_to_high_pct,
+        ytd_off_high_pct,
+        ralph_score,
         history_json,
     ) in rows:
         try:
@@ -143,6 +155,10 @@ def _load_metrics_from_db() -> Tuple[Dict[str, TickerMetric], Set[str]]:
             change5d=_safe_float(change5d),
             dollar_vol5d=_safe_float(dollar_vol5d),
             history=parsed_history,
+            adr20_pct=_safe_float(adr20_pct),
+            ytd_gain_to_high_pct=_safe_float(ytd_gain_to_high_pct),
+            ytd_off_high_pct=_safe_float(ytd_off_high_pct),
+            ralph_score=_safe_float(ralph_score),
         )
 
     try:
@@ -201,6 +217,71 @@ def _determine_inactive(rows: List[tuple]) -> Set[str]:
     return inactive
 
 
+def _coerce_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed.date()
+    return None
+
+
+def compute_ytd_ralph_metrics(
+    dates: Sequence[Any], closes: Sequence[float]
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    if not dates or not closes:
+        return None, None, None
+
+    normalized: List[Tuple[date, float]] = []
+    for raw_date, close_value in zip(dates, closes):
+        parsed_date = _coerce_date(raw_date)
+        if parsed_date is None:
+            continue
+        try:
+            close_float = float(close_value)
+        except (TypeError, ValueError):
+            continue
+        normalized.append((parsed_date, close_float))
+
+    if not normalized:
+        return None, None, None
+
+    normalized.sort(key=lambda item: item[0])
+    latest_date = normalized[-1][0]
+    year_start = date(latest_date.year, 1, 1)
+    ytd_samples = [entry for entry in normalized if entry[0] >= year_start]
+    if not ytd_samples:
+        return None, None, None
+
+    open_ytd = ytd_samples[0][1]
+    close_latest = ytd_samples[-1][1]
+    high_ytd = max(value for _, value in ytd_samples)
+    if (
+        open_ytd is None
+        or close_latest is None
+        or high_ytd is None
+        or open_ytd <= 0
+        or close_latest <= 0
+        or high_ytd <= 0
+    ):
+        return None, None, None
+
+    pct_gain = (high_ytd / open_ytd - 1.0) * 100.0
+    pct_off = 0.0
+    if high_ytd > 0:
+        pct_off = max((1.0 - close_latest / high_ytd) * 100.0, 0.0)
+    denom = max(pct_off, 1.0)
+    ralph_score = pct_gain / denom if denom else None
+    return pct_gain, pct_off, ralph_score
+
+
 def _load_inactive_symbols(conn: duckdb.DuckDBPyConnection) -> Set[str]:
     try:
         rows = conn.execute(
@@ -236,7 +317,11 @@ def _load_metrics_for_symbols(
                rel_vol10,
                change1d,
                change5d,
+               adr20_pct,
                dollar_vol5d,
+               ytd_gain_to_high_pct,
+               ytd_off_high_pct,
+               ralph_score,
                price_history
         FROM ticker_metrics
         WHERE symbol IN ({placeholders})
@@ -255,7 +340,11 @@ def _load_metrics_for_symbols(
         rel_vol10,
         change1d,
         change5d,
+        adr20_pct,
         dollar_vol5d,
+        ytd_gain_to_high_pct,
+        ytd_off_high_pct,
+        ralph_score,
         history_json,
     ) in rows:
         if not symbol:
@@ -295,6 +384,10 @@ def _load_metrics_for_symbols(
             change5d=_safe_float(change5d),
             dollar_vol5d=_safe_float(dollar_vol5d),
             history=parsed_history,
+            adr20_pct=_safe_float(adr20_pct),
+            ytd_gain_to_high_pct=_safe_float(ytd_gain_to_high_pct),
+            ytd_off_high_pct=_safe_float(ytd_off_high_pct),
+            ralph_score=_safe_float(ralph_score),
         )
 
     return metrics
@@ -306,7 +399,7 @@ def _compute_metric_from_ohlc(
     try:
         rows = conn.execute(
             """
-            SELECT date, close, volume, dollar_volume
+            SELECT date, close, volume, dollar_volume, high, low
             FROM ticker_ohlc
             WHERE symbol = ?
             ORDER BY date
@@ -320,10 +413,12 @@ def _compute_metric_from_ohlc(
         return None
 
     dates: List[str] = []
+    date_objs: List[date] = []
     closes: List[float] = []
     volumes: List[float] = []
     dollar_vols: List[float] = []
-    for date_val, close, volume, dollar_volume in rows:
+    range_ratios: List[float] = []
+    for date_val, close, volume, dollar_volume, high, low in rows:
         if (
             date_val is None
             or close is None
@@ -331,20 +426,35 @@ def _compute_metric_from_ohlc(
             or dollar_volume is None
         ):
             continue
-        if hasattr(date_val, "isoformat"):
-            date_str = date_val.isoformat()
+        if isinstance(date_val, datetime):
+            parsed_date = date_val.date()
+        elif isinstance(date_val, date):
+            parsed_date = date_val
         else:
-            date_str = str(date_val)
+            try:
+                parsed_date = datetime.fromisoformat(str(date_val)).date()
+            except Exception:
+                continue
+        date_objs.append(parsed_date)
+        date_str = parsed_date.isoformat()
         try:
             close_val = float(close)
             volume_val = float(volume)
             dollar_val = float(dollar_volume)
+            high_val = float(high) if high is not None else None
+            low_val = float(low) if low is not None else None
         except (TypeError, ValueError):
             continue
         dates.append(date_str)
         closes.append(close_val)
         volumes.append(volume_val)
         dollar_vols.append(dollar_val)
+        if high_val is not None and low_val is not None and low_val != 0:
+            ratio = high_val / low_val
+            if ratio > 0:
+                range_ratios.append(ratio)
+
+    ytd_gain, ytd_off, ralph_score = compute_ytd_ralph_metrics(date_objs, closes)
 
     if len(dates) < MIN_HISTORY_DAYS or len(closes) < MIN_HISTORY_DAYS:
         return None
@@ -389,6 +499,12 @@ def _compute_metric_from_ohlc(
             }
         )
 
+    adr20_pct = None
+    if len(range_ratios) >= 20:
+        recent = range_ratios[-20:]
+        avg_ratio = sum(recent) / len(recent)
+        adr20_pct = (avg_ratio - 1.0) * 100.0
+
     return TickerMetric(
         symbol=str(symbol).strip().upper(),
         last_date=dates[-1],
@@ -399,6 +515,10 @@ def _compute_metric_from_ohlc(
         change5d=change5d,
         dollar_vol5d=dollar_vol5d,
         history=history_entries,
+        adr20_pct=adr20_pct,
+        ytd_gain_to_high_pct=ytd_gain,
+        ytd_off_high_pct=ytd_off,
+        ralph_score=ralph_score,
     )
 
 
@@ -427,6 +547,7 @@ def _load_metrics_from_json() -> Tuple[Dict[str, TickerMetric], Set[str]]:
             rel_vol10=_safe_float(data.get("rel_vol10")),
             change1d=_safe_float(data.get("change1d")),
             change5d=_safe_float(data.get("change5d")),
+            adr20_pct=_safe_float(data.get("adr20_pct")),
             dollar_vol5d=_safe_float(data.get("dollar_vol5d")),
             history=[
                 {
@@ -438,6 +559,9 @@ def _load_metrics_from_json() -> Tuple[Dict[str, TickerMetric], Set[str]]:
                 for item in data.get("history", [])
                 if isinstance(item, dict)
             ],
+            ytd_gain_to_high_pct=_safe_float(data.get("ytd_gain_to_high_pct")),
+            ytd_off_high_pct=_safe_float(data.get("ytd_off_high_pct")),
+            ralph_score=_safe_float(data.get("ralph_score")),
         )
     inactive_payload = payload.get("inactive_tickers")
     inactive_rows: List[tuple] = []
@@ -589,6 +713,10 @@ def aggregate_sectors(
                     avgDollarVol10=metric.avg_dollar_vol10,
                     lastUpdated=metric.last_date,
                     dollarVol5d=metric_dollar_vol5d,
+                    adr20Pct=metric.adr20_pct,
+                    ytdGainToHighPct=metric.ytd_gain_to_high_pct,
+                    ytdOffHighPct=metric.ytd_off_high_pct,
+                    ralphScore=metric.ralph_score,
                     inactive=False,
                     history=[
                         {
@@ -886,6 +1014,7 @@ def _patch_latest_snapshot_sync(updated_row: SectorRowDTO) -> None:
             "rel_vol10": member.get("relVol10"),
             "change1d": member.get("change1d"),
             "change5d": member.get("change5d"),
+            "adr20_pct": member.get("adr20Pct"),
             "dollar_vol5d": member.get("dollarVol5d"),
             "history": member.get("history", []),
         }
@@ -974,4 +1103,5 @@ __all__ = [
     "patch_latest_snapshot",
     "get_sector_lock",
     "compute_snapshot_metadata",
+    "compute_ytd_ralph_metrics",
 ]

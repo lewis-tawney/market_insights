@@ -16,6 +16,7 @@ from app.services.sector_snapshot import (
     load_snapshot_payload,
     compute_snapshot_metadata,
 )
+from app.schemas.sector_volume import SectorIn
 from app.services.candles_duckdb import get_daily_eod, period_start
 from app.services.jobs import JobManager
 
@@ -67,6 +68,12 @@ class TickerMutation(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
 
 
+class SectorCreateRequest(BaseModel):
+    id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    tickers: List[str] = Field(..., min_length=1)
+
+
 def _apply_rate_headers(response: JSONResponse, headers: Dict[str, str]) -> JSONResponse:
     for header, value in headers.items():
         response.headers[header] = value
@@ -101,6 +108,31 @@ async def remove_sector_ticker(sector_id: str, symbol: str, request: Request):
 
     jobs = _job_manager(request)
     task_id = await jobs.enqueue_remove_ticker(sector_id, symbol)
+    response = JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"task_id": task_id})
+    return _apply_rate_headers(response, rate_headers)
+
+
+@router.post("/sectors", status_code=status.HTTP_202_ACCEPTED)
+async def create_sector(payload: SectorCreateRequest, request: Request):
+    security = request.app.state.security
+    client_ip, token_id = security.authorize(request)
+    rate_headers = security.check_rate_limit(
+        client_ip=client_ip, token_id=token_id, route="/sectors"
+    )
+
+    jobs = _job_manager(request)
+    sanitized_tickers = [
+        symbol.strip().upper() for symbol in payload.tickers if symbol and symbol.strip()
+    ]
+    if not sanitized_tickers:
+        raise HTTPException(status_code=400, detail="Tickers list cannot be empty")
+    sector = SectorIn(
+        id=payload.id.strip().upper(),
+        name=payload.name.strip(),
+        tickers=sanitized_tickers,
+    )
+
+    task_id = await jobs.enqueue_create_sector(sector)
     response = JSONResponse(status_code=status.HTTP_202_ACCEPTED, content={"task_id": task_id})
     return _apply_rate_headers(response, rate_headers)
 

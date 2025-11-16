@@ -250,10 +250,16 @@ export interface TickerLeaderDTO {
 export interface TickerMetricDTO {
   ticker: string;
   change1d: number | null;
+  change5d: number | null;
   relVol10: number | null;
   dollarVolToday: number | null;
   avgDollarVol10: number | null;
   lastUpdated: string | null;
+  dollarVol5d: number | null;
+  adr20Pct: number | null;
+  ytdGainToHighPct: number | null;
+  ytdOffHighPct: number | null;
+  ralphScore: number | null;
   inactive: boolean;
   history: Array<{
     date: string;
@@ -294,6 +300,19 @@ export interface SectorVolumeResponse {
   sectors: SectorVolumeDTO[];
 }
 
+export interface SectorRalphRow {
+  rank: number;
+  symbol: string;
+  name: string;
+  pctGainToHigh: number | null;
+  pctOffHigh: number | null;
+  ralphScore: number | null;
+  sectorId: string | null;
+  isBaseline: boolean;
+  avgDollarVol10: number | null;
+  sparklineCloses: number[];
+}
+
 export async function fetchSectorVolumeAggregate(sectors?: SectorIn[]): Promise<SectorVolumeDTO[]> {
   let response: SectorVolumeResponse;
   if (sectors && sectors.length) {
@@ -304,6 +323,10 @@ export async function fetchSectorVolumeAggregate(sectors?: SectorIn[]): Promise<
   }
   // Extract the sectors array from the response
   return response.sectors || [];
+}
+
+export async function fetchSectorRalph(): Promise<SectorRalphRow[]> {
+  return getJSONNoCache<SectorRalphRow[]>(`/metrics/sectors/ralph`);
 }
 
 export async function fetchSnapshotHealth(): Promise<SnapshotHealthSummary> {
@@ -322,6 +345,12 @@ export interface TaskStatusResponse {
 
 export interface TaskEnqueueResponse {
   task_id: string;
+}
+
+export interface SectorCreateRequest {
+  id: string;
+  name: string;
+  tickers: string[];
 }
 
 export async function addSectorTicker(sectorId: string, symbol: string): Promise<TaskEnqueueResponse> {
@@ -346,6 +375,15 @@ export async function removeSectorTicker(sectorId: string, symbol: string): Prom
 export async function fetchTaskStatus(taskId: string): Promise<TaskStatusResponse> {
   return requestJSON<TaskStatusResponse>(`/tasks/${encodeURIComponent(taskId)}`, {
     method: "GET",
+  });
+}
+
+export async function createSector(
+  payload: SectorCreateRequest,
+): Promise<TaskEnqueueResponse> {
+  return requestJSON<TaskEnqueueResponse>(`/sectors`, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

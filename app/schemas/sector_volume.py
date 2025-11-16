@@ -33,6 +33,10 @@ class TickerMetricDTO(BaseModel):
     avgDollarVol10: Optional[float] = None
     lastUpdated: Optional[str] = None
     dollarVol5d: Optional[float] = None
+    adr20Pct: Optional[float] = None
+    ytdGainToHighPct: Optional[float] = None
+    ytdOffHighPct: Optional[float] = None
+    ralphScore: Optional[float] = None
     inactive: bool = False
     history: List[DailyMetricDTO] = Field(default_factory=list)
 
