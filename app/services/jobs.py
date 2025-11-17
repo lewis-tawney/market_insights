@@ -95,7 +95,7 @@ class JobManager:
         return job_id
 
     async def enqueue_sector_patch(self, sector_id: str) -> str:
-        sector_key = sector_id.strip().upper()
+        sector_key = sector_id.strip().lower()
 
         async def job() -> Optional[str]:
             lock = sector_snapshot.get_sector_lock(sector_key)
@@ -111,7 +111,7 @@ class JobManager:
         )
 
     async def enqueue_add_ticker(self, sector_id: str, symbol: str) -> str:
-        sector_key = sector_id.strip().upper()
+        sector_key = sector_id.strip().lower()
         ticker = symbol.strip().upper()
         if not ticker:
             raise ValueError("Ticker symbol required")
@@ -133,7 +133,7 @@ class JobManager:
         )
 
     async def enqueue_remove_ticker(self, sector_id: str, symbol: str) -> str:
-        sector_key = sector_id.strip().upper()
+        sector_key = sector_id.strip().lower()
         ticker = symbol.strip().upper()
         await asyncio.to_thread(self._delete_sector_member, sector_key, ticker)
 
@@ -232,6 +232,10 @@ class JobManager:
                     """,
                     (sector.id, ticker.strip().upper()),
                 )
+            try:
+                sector_snapshot.export_sectors_to_json(Path("config/sectors_snapshot_current.json"))
+            except Exception:
+                LOGGER.warning("Failed to export sectors snapshot to JSON", exc_info=True)
         finally:
             conn.close()
 
@@ -380,6 +384,10 @@ class JobManager:
                 """,
                 (sector_id, symbol),
             )
+            try:
+                sector_snapshot.export_sectors_to_json(Path("config/sectors_snapshot_current.json"))
+            except Exception:
+                LOGGER.warning("Failed to export sectors snapshot to JSON", exc_info=True)
         finally:
             conn.close()
 
@@ -390,6 +398,10 @@ class JobManager:
                 "DELETE FROM sectors_map WHERE sector_id = ? AND symbol = ?",
                 (sector_id, symbol),
             )
+            try:
+                sector_snapshot.export_sectors_to_json(Path("config/sectors_snapshot_current.json"))
+            except Exception:
+                LOGGER.warning("Failed to export sectors snapshot to JSON", exc_info=True)
         finally:
             conn.close()
 

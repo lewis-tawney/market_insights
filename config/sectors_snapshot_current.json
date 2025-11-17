@@ -1,0 +1,607 @@
+{
+  "sectors": [
+    {
+      "id": "ai-infrastructure",
+      "name": "AI Infrastructure",
+      "sort_order": 0,
+      "tickers": [
+        "ALAB",
+        "ANET",
+        "CRDO",
+        "CRWV",
+        "DELL",
+        "FLEX",
+        "HPE",
+        "NBIS",
+        "NTAP",
+        "ORCL",
+        "SMCI",
+        "VRT",
+        "WYFI"
+      ]
+    },
+    {
+      "id": "apparel",
+      "name": "Apparel",
+      "sort_order": 1,
+      "tickers": [
+        "AEO",
+        "ANF",
+        "CROX",
+        "DECK",
+        "GIL",
+        "GOOS",
+        "HBI",
+        "LULU",
+        "NKE",
+        "ON",
+        "ONON",
+        "RL",
+        "UAA"
+      ]
+    },
+    {
+      "id": "auto",
+      "name": "Auto",
+      "sort_order": 2,
+      "tickers": [
+        "F",
+        "GM",
+        "HMC",
+        "LI",
+        "RACE",
+        "RIVN",
+        "STLA",
+        "TM",
+        "TSLA"
+      ]
+    },
+    {
+      "id": "autonomous-vehicles",
+      "name": "Autonomous Vehicles",
+      "sort_order": 3,
+      "tickers": [
+        "AEVA",
+        "AUR",
+        "MBLY",
+        "NBIS",
+        "OUST",
+        "PONY",
+        "TSLA",
+        "UBER",
+        "WRD"
+      ]
+    },
+    {
+      "id": "banks",
+      "name": "Banks",
+      "sort_order": 4,
+      "tickers": [
+        "ALLY",
+        "BAC",
+        "C",
+        "GS",
+        "JPM",
+        "MTB",
+        "SCHW",
+        "SOFI",
+        "TD",
+        "USB",
+        "WFC"
+      ]
+    },
+    {
+      "id": "batteries",
+      "name": "Batteries",
+      "sort_order": 5,
+      "tickers": [
+        "ABAT",
+        "AMPX",
+        "ENVX",
+        "EOSE",
+        "FLNC",
+        "MVST",
+        "NVX",
+        "QS",
+        "SLDP"
+      ]
+    },
+    {
+      "id": "biotech",
+      "name": "Biotech",
+      "sort_order": 6,
+      "tickers": [
+        "ABBV",
+        "CRSP",
+        "EXAS",
+        "GH",
+        "HALO",
+        "LLY",
+        "MDGL",
+        "MRNA",
+        "NVAX",
+        "NVO",
+        "RVMD",
+        "SRPT",
+        "TWST"
+      ]
+    },
+    {
+      "id": "china",
+      "name": "China",
+      "sort_order": 7,
+      "tickers": [
+        "BABA",
+        "BIDU",
+        "FUTU",
+        "HUYA",
+        "JD",
+        "LI",
+        "PDD",
+        "PONY",
+        "TCEHY",
+        "TIGR",
+        "WB",
+        "XPEV"
+      ]
+    },
+    {
+      "id": "crypto",
+      "name": "Crypto",
+      "sort_order": 8,
+      "tickers": [
+        "BMNR",
+        "COIN",
+        "CRCL",
+        "ETHA",
+        "HOOD",
+        "IBIT",
+        "MARA",
+        "MSTR",
+        "RIOT"
+      ]
+    },
+    {
+      "id": "cybersecurity",
+      "name": "Cybersecurity",
+      "sort_order": 9,
+      "tickers": [
+        "CRWD",
+        "FTNT",
+        "NET",
+        "OKTA",
+        "PANW",
+        "RBRK",
+        "S",
+        "ZS"
+      ]
+    },
+    {
+      "id": "datacenter",
+      "name": "Datacenter",
+      "sort_order": 10,
+      "tickers": [
+        "APLD",
+        "CIFR",
+        "CORZ",
+        "CRWV",
+        "GLXY",
+        "IREN",
+        "NBIS"
+      ]
+    },
+    {
+      "id": "defense",
+      "name": "Defense",
+      "sort_order": 11,
+      "tickers": [
+        "BA",
+        "BWXT",
+        "DRS",
+        "GD",
+        "KD",
+        "KTOS",
+        "LHX",
+        "LMT",
+        "MRCY",
+        "NOC",
+        "RTX"
+      ]
+    },
+    {
+      "id": "dow",
+      "name": "DOW",
+      "sort_order": 12,
+      "tickers": [
+        "AAPL",
+        "AMGN",
+        "AXP",
+        "BA",
+        "CAT",
+        "CRM",
+        "CSCO",
+        "CVX",
+        "DIS",
+        "DOW",
+        "GS",
+        "HD",
+        "HON",
+        "IBM",
+        "INTC",
+        "JNJ",
+        "JPM",
+        "KO",
+        "MCD",
+        "MMM",
+        "MRK",
+        "MSFT",
+        "NKE",
+        "PG",
+        "TRV",
+        "UNH",
+        "V",
+        "VZ",
+        "WMT"
+      ]
+    },
+    {
+      "id": "drones-evtols",
+      "name": "Drones & eVTOL",
+      "sort_order": 13,
+      "tickers": [
+        "ACHR",
+        "AVAV",
+        "DRS",
+        "ERJ",
+        "JOBY",
+        "KTOS",
+        "MRCY",
+        "ONDS",
+        "RCAT",
+        "UMAC"
+      ]
+    },
+    {
+      "id": "evs",
+      "name": "EVs",
+      "sort_order": 14,
+      "tickers": [
+        "BLNK",
+        "CHPT",
+        "EVGO",
+        "LCID",
+        "PLUG",
+        "RIVN",
+        "TSLA"
+      ]
+    },
+    {
+      "id": "fintech",
+      "name": "Fintech",
+      "sort_order": 15,
+      "tickers": [
+        "AFRM",
+        "DAVE",
+        "FOUR",
+        "HIPO",
+        "HOOD",
+        "LC",
+        "LMND",
+        "PYPL",
+        "ROOT",
+        "SEZL",
+        "SOFI",
+        "TOST",
+        "TREE",
+        "UPST",
+        "XYZ"
+      ]
+    },
+    {
+      "id": "food",
+      "name": "Food",
+      "sort_order": 16,
+      "tickers": [
+        "CAVA",
+        "CBRL",
+        "CMG",
+        "COCO",
+        "DNUT",
+        "EAT",
+        "JACK",
+        "MCD",
+        "PFGC",
+        "SG",
+        "SHAK",
+        "WING"
+      ]
+    },
+    {
+      "id": "genomics",
+      "name": "Genomics",
+      "sort_order": 17,
+      "tickers": [
+        "A",
+        "ABCL",
+        "ARKG",
+        "CRSP",
+        "EXAS",
+        "GH",
+        "GRAL",
+        "MRNA",
+        "NTLA",
+        "PRME",
+        "TEM"
+      ]
+    },
+    {
+      "id": "homebuilders",
+      "name": "Homebuilders",
+      "sort_order": 18,
+      "tickers": [
+        "DHI",
+        "LEN",
+        "NAIL",
+        "PHM",
+        "TOL"
+      ]
+    },
+    {
+      "id": "insurance-tech",
+      "name": "Insurance Tech",
+      "sort_order": 19,
+      "tickers": [
+        "HIPO",
+        "LMND",
+        "OSCR",
+        "ROOT"
+      ]
+    },
+    {
+      "id": "lidar",
+      "name": "Lidar",
+      "sort_order": 20,
+      "tickers": [
+        "LAZR",
+        "LIDR",
+        "MVIS",
+        "OUST"
+      ]
+    },
+    {
+      "id": "lithium",
+      "name": "Lithium",
+      "sort_order": 21,
+      "tickers": [
+        "ALB",
+        "LAC",
+        "SGML",
+        "SQM"
+      ]
+    },
+    {
+      "id": "magnificent-seven",
+      "name": "Magnificent Seven",
+      "sort_order": 22,
+      "tickers": [
+        "AAPL",
+        "AMZN",
+        "GOOGL",
+        "META",
+        "MSFT",
+        "NVDA",
+        "TSLA"
+      ]
+    },
+    {
+      "id": "memes",
+      "name": "Memes",
+      "sort_order": 23,
+      "tickers": [
+        "AMC",
+        "GME"
+      ]
+    },
+    {
+      "id": "nuclear",
+      "name": "Nuclear",
+      "sort_order": 24,
+      "tickers": [
+        "CCJ",
+        "CEG",
+        "NNE",
+        "OKLO",
+        "SMR",
+        "UEC",
+        "UUUU",
+        "VST"
+      ]
+    },
+    {
+      "id": "oil",
+      "name": "Oil",
+      "sort_order": 25,
+      "tickers": [
+        "AR",
+        "BP",
+        "CVX",
+        "DVN",
+        "OXY",
+        "SHEL",
+        "XOM"
+      ]
+    },
+    {
+      "id": "payments",
+      "name": "Payments",
+      "sort_order": 26,
+      "tickers": [
+        "AFRM",
+        "AXP",
+        "FOUR",
+        "GPN",
+        "MA",
+        "PYPL",
+        "TOST",
+        "V"
+      ]
+    },
+    {
+      "id": "regional-banks",
+      "name": "Regional Banks",
+      "sort_order": 27,
+      "tickers": [
+        "CMA",
+        "FITB",
+        "HBAN",
+        "KEY",
+        "RF",
+        "TFC",
+        "WAL"
+      ]
+    },
+    {
+      "id": "retail",
+      "name": "Retail",
+      "sort_order": 28,
+      "tickers": [
+        "BBY",
+        "COST",
+        "HD",
+        "LOW",
+        "ROST",
+        "TGT",
+        "ULCC",
+        "WMT"
+      ]
+    },
+    {
+      "id": "semis",
+      "name": "Semiconductors",
+      "sort_order": 29,
+      "tickers": [
+        "AMD",
+        "ASML",
+        "AVGO",
+        "INTC",
+        "MU",
+        "NVDA",
+        "NXPI",
+        "QCOM",
+        "SMH",
+        "TSM"
+      ]
+    },
+    {
+      "id": "solar",
+      "name": "Solar",
+      "sort_order": 30,
+      "tickers": [
+        "ENPH",
+        "FSLR",
+        "JKS",
+        "RUN",
+        "SEDG"
+      ]
+    },
+    {
+      "id": "software",
+      "name": "Software",
+      "sort_order": 31,
+      "tickers": [
+        "ADBE",
+        "CRM",
+        "CRWD",
+        "DDOG",
+        "MSFT",
+        "NOW",
+        "OKTA",
+        "ORCL",
+        "PANW",
+        "SNOW"
+      ]
+    },
+    {
+      "id": "space",
+      "name": "Space",
+      "sort_order": 32,
+      "tickers": [
+        "ASTS",
+        "LHX",
+        "LMT",
+        "NOC",
+        "RKLB",
+        "RTX",
+        "SPCE"
+      ]
+    },
+    {
+      "id": "transport",
+      "name": "Transport",
+      "sort_order": 33,
+      "tickers": [
+        "AAL",
+        "CSX",
+        "DAL",
+        "FDX",
+        "JBLU",
+        "NSC",
+        "UAL",
+        "UPS"
+      ]
+    },
+    {
+      "id": "uranium",
+      "name": "Uranium",
+      "sort_order": 34,
+      "tickers": [
+        "CCJ",
+        "DNN",
+        "UEC",
+        "URA",
+        "URNM",
+        "UUUU"
+      ]
+    },
+    {
+      "id": "us-ai",
+      "name": "US AI",
+      "sort_order": 35,
+      "tickers": [
+        "AAPL",
+        "AMZN",
+        "GOOGL",
+        "META",
+        "MSFT",
+        "NVDA",
+        "SMCI",
+        "TSLA"
+      ]
+    },
+    {
+      "id": "utilities",
+      "name": "Utilities",
+      "sort_order": 36,
+      "tickers": [
+        "DUK",
+        "NEE",
+        "PCG",
+        "SO",
+        "SRE",
+        "WEC",
+        "XEL"
+      ]
+    },
+    {
+      "id": "MEMORY",
+      "name": "Memory",
+      "sort_order": 38,
+      "tickers": [
+        "GSIT",
+        "MU",
+        "SNDK",
+        "WDC"
+      ]
+    }
+  ]
+}

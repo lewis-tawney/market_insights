@@ -1,4 +1,13 @@
 import React, { useEffect, useState } from "react";
+
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { cn } from "@/lib/utils";
+
 import { fetchTrend } from "../lib/api";
 import type { TrendResponse } from "../lib/api";
 
@@ -53,137 +62,121 @@ export function TickerCard({ symbol, accentColor }: TickerCardProps) {
   };
 
   const formatSmaPercent = (value: number | null | undefined) => {
-    if (value === null || value === undefined) return { text: "—", color: "text-gray-400" };
-    const color = value >= 0 ? "text-green-400" : "text-red-400";
-    return { text: `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`, color };
+    if (value === null || value === undefined) {
+      return { text: "—", color: "text-muted-foreground" };
+    }
+    const isPositive = value >= 0;
+    const color = isPositive ? "text-success" : "text-destructive";
+    return { text: `${isPositive ? "+" : ""}${value.toFixed(1)}%`, color };
   };
 
 
   if (loading) {
     return (
-      <div className="bg-gray-800 rounded shadow p-4">
-        <div className="animate-pulse">
-          <div className="h-4 bg-gray-600 rounded w-1/4 mb-2"></div>
-          <div className="h-6 bg-gray-600 rounded w-1/2 mb-4"></div>
-          <div className="space-y-2">
-            <div className="h-3 bg-gray-600 rounded"></div>
-            <div className="h-3 bg-gray-600 rounded"></div>
-            <div className="h-3 bg-gray-600 rounded"></div>
-            <div className="h-3 bg-gray-600 rounded"></div>
-          </div>
-        </div>
-      </div>
+      <Card className="h-full animate-pulse bg-background-raised">
+        <CardHeader className="space-y-2 px-panel pt-panel pb-gutter">
+          <div className="h-4 w-32 rounded bg-background-muted" />
+          <div className="mt-2 h-6 w-40 rounded bg-background-muted" />
+        </CardHeader>
+        <CardContent className="space-y-3 px-panel pb-panel pt-0">
+          <div className="h-3 w-full rounded bg-background-muted" />
+          <div className="h-3 w-2/3 rounded bg-background-muted" />
+          <div className="h-3 w-3/4 rounded bg-background-muted" />
+          <div className="h-3 w-1/2 rounded bg-background-muted" />
+        </CardContent>
+      </Card>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-gray-800 rounded shadow p-4">
-        <div className="text-red-400 text-sm">{error}</div>
-      </div>
+      <Card className="h-full bg-background-raised">
+        <CardContent className="flex h-full items-center justify-center px-panel pb-panel pt-panel">
+          <p className="text-body text-destructive">{error}</p>
+        </CardContent>
+      </Card>
     );
   }
 
   return (
-    <div className="bg-gray-800 rounded shadow p-4">
-      {/* Header */}
-      <div className="mb-3">
+    <Card className="h-full bg-background-raised">
+      <CardHeader className="space-y-2 px-panel pt-panel pb-gutter">
         <div className="flex items-center gap-2">
           {accentColor ? (
             <span
               className="inline-block h-2.5 w-2.5 rounded-full"
               style={{ backgroundColor: accentColor }}
+              aria-hidden="true"
             />
           ) : null}
-          <div className="text-xl font-bold text-gray-100">{symbol}</div>
+          <CardTitle className="text-heading-md text-foreground">{symbol}</CardTitle>
         </div>
-      </div>
-
-      {/* Price and Daily Change */}
-      <div className="flex items-end gap-3 mb-4">
-        <div className="text-3xl font-bold text-gray-100">
-          {formatPrice(data?.price)}
+      </CardHeader>
+      <CardContent className="flex min-w-0 flex-col gap-3 px-panel pb-panel pt-0">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <p className="text-heading-lg font-semibold text-foreground">
+              {formatPrice(data?.price)}
+            </p>
+          </div>
+          <p
+            className={`text-heading-sm font-semibold ${
+              dailyPct && dailyPct < 0 ? "text-destructive" : "text-success"
+            }`}
+          >
+            {formatPercent(dailyPct)}
+          </p>
         </div>
-        <div className={`text-lg font-semibold ${
-          dailyPct && dailyPct < 0 ? "text-red-400" : "text-primary-500"
-        }`}>
-          {formatPercent(dailyPct)}
+
+        <div className="rounded-lg border border-border/70 bg-background p-3 space-y-3">
+          {[
+            {
+              title: "SMA distance",
+              rows: [
+                { label: "10d", value: data?.sma10 },
+                { label: "20d", value: data?.sma20 },
+                { label: "50d", value: data?.sma50 },
+                { label: "200d", value: data?.sma200 },
+              ],
+            },
+            {
+              title: "EMA distance",
+              rows: [
+                { label: "9d", value: data?.ema9 },
+                { label: "21d", value: data?.ema21 },
+              ],
+            },
+          ].map((block) => (
+            <div key={block.title} className="space-y-1.5">
+              <div className="flex items-center justify-between text-body-xs uppercase tracking-[0.25em] text-muted-foreground">
+                <span>{block.title}</span>
+                <span>Δ%</span>
+              </div>
+              <div className="space-y-1">
+                {block.rows.map(({ label, value }) => {
+                  const percentDiff =
+                    data?.price && value ? (data.price / value - 1) * 100 : null;
+                  const formatted = formatSmaPercent(percentDiff);
+                  return (
+                    <div
+                      key={`${block.title}-${label}`}
+                      className="flex items-center justify-between text-body-sm font-mono"
+                    >
+                      <span className="text-muted-foreground">{label}</span>
+                      <div className="flex items-center gap-4">
+                        <span>{formatSmaPrice(value)}</span>
+                        <span className={cn("text-right", formatted.color)}>
+                          {formatted.text}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
-      </div>
-
-      {/* SMA Distance from Price */}
-      <div className="space-y-1">
-        <div className="text-sm text-gray-400 mb-1 text-center">SMA</div>
-
-        <div className="space-y-0.5">
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
-            <span className="text-gray-400 font-mono w-8 text-left">10d</span>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.sma10)}</span>
-              <span className={`text-xs font-mono ${formatSmaPercent(data?.price && data?.sma10 ? (data.price / data.sma10 - 1) * 100 : null).color}`}>
-                {formatSmaPercent(data?.price && data?.sma10 ? (data.price / data.sma10 - 1) * 100 : null).text}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
-            <span className="text-gray-400 font-mono w-8 text-left">20d</span>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.sma20)}</span>
-              <span className={`text-xs font-mono ${formatSmaPercent(data?.price && data?.sma20 ? (data.price / data.sma20 - 1) * 100 : null).color}`}>
-                {formatSmaPercent(data?.price && data?.sma20 ? (data.price / data.sma20 - 1) * 100 : null).text}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
-            <span className="text-gray-400 font-mono w-8 text-left">50d</span>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.sma50)}</span>
-              <span className={`text-xs font-mono ${formatSmaPercent(data?.price && data?.sma50 ? (data.price / data.sma50 - 1) * 100 : null).color}`}>
-                {formatSmaPercent(data?.price && data?.sma50 ? (data.price / data.sma50 - 1) * 100 : null).text}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
-            <span className="text-gray-400 font-mono w-8 text-left">200d</span>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.sma200)}</span>
-              <span className={`text-xs font-mono ${formatSmaPercent(data?.price && data?.sma200 ? (data.price / data.sma200 - 1) * 100 : null).color}`}>
-                {formatSmaPercent(data?.price && data?.sma200 ? (data.price / data.sma200 - 1) * 100 : null).text}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* EMA */}
-      <div className="space-y-1">
-        <div className="text-sm text-gray-400 mb-1 text-center">EMA</div>
-        
-        <div className="space-y-0.5">
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
-            <span className="text-gray-400 font-mono w-8 text-left">9d</span>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.ema9)}</span>
-              <span className={`text-xs font-mono ${formatSmaPercent(data?.price && data?.ema9 ? (data.price / data.ema9 - 1) * 100 : null).color}`}>
-                {formatSmaPercent(data?.price && data?.ema9 ? (data.price / data.ema9 - 1) * 100 : null).text}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between text-xs px-2 py-0.5">
-            <span className="text-gray-400 font-mono w-8 text-left">21d</span>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs text-gray-200">{formatSmaPrice(data?.ema21)}</span>
-              <span className={`text-xs font-mono ${formatSmaPercent(data?.price && data?.ema21 ? (data.price / data.ema21 - 1) * 100 : null).color}`}>
-                {formatSmaPercent(data?.price && data?.ema21 ? (data.price / data.ema21 - 1) * 100 : null).text}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }

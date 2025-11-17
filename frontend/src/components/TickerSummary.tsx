@@ -1,4 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
+
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+
 import { percent, fixed2 } from "../lib/format";
 // Local metrics fetches using env-based API base
 const BASE = "/api";
@@ -105,71 +109,81 @@ export default function TickerSummary({ symbol }: Props) {
   }, [trend]);
 
   return (
-    <div className="rounded-xl border bg-white shadow p-4">
-      <div className="text-sm text-gray-600 mb-3">{trend?.as_of || "—"}</div>
-
-      {/* Top row with price and technical indicators */}
-      <div className="flex gap-6 mb-3">
-        {/* Price section - same width as performance metrics below */}
-        <div className="flex items-end gap-3">
-          <div className="text-2xl font-semibold tracking-tight">{symbol}</div>
-          <div className="text-2xl font-mono">{fixed2(trend?.price)}</div>
-          <div className={`text-lg font-semibold ${dailyPct && dailyPct < 0 ? "text-red-600" : "text-green-700"}`}>
-            {percent(dailyPct, { sign: true })}
+    <Card className="bg-background-raised">
+      <CardHeader className="px-panel pt-panel pb-gutter">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <Badge variant="outline" className="px-3 py-1 text-heading-sm font-semibold">
+              {symbol}
+            </Badge>
+            <p
+              className={`text-heading-md font-semibold ${
+                dailyPct && dailyPct < 0 ? "text-destructive" : "text-success"
+              }`}
+            >
+              {percent(dailyPct, { sign: true })}
+            </p>
           </div>
+          <CardDescription className="text-body text-muted-foreground">
+            {trend?.as_of || "—"}
+          </CardDescription>
         </div>
-
-        {/* RSI section */}
-        <div className="flex-1">
-          <div className="text-center">
-            <div className="text-sm text-gray-500 mb-1">RSI</div>
-            <div className={`text-2xl font-bold ${(rsi?.rsi ?? 0) > 70 ? "text-red-600" : (rsi?.rsi ?? 0) < 30 ? "text-green-700" : "text-gray-700"}`}>
+      </CardHeader>
+      <CardContent className="space-y-gutter px-panel pb-panel pt-0">
+        <div className="flex flex-wrap gap-panel">
+          <div>
+            <p className="text-body-xs uppercase tracking-[0.3em] text-muted-foreground">
+              Last price
+            </p>
+            <p className="text-heading-xl font-semibold text-foreground">
+              {fixed2(trend?.price)}
+            </p>
+          </div>
+          <div className="min-w-[120px]">
+            <p className="text-body-xs uppercase tracking-[0.3em] text-muted-foreground text-center">
+              RSI
+            </p>
+            <p
+              className={`text-heading-lg text-center font-semibold ${
+                (rsi?.rsi ?? 0) > 70
+                  ? "text-warning"
+                  : (rsi?.rsi ?? 0) < 30
+                    ? "text-success"
+                    : "text-foreground"
+              }`}
+            >
               {rsi?.rsi ? rsi.rsi.toFixed(1) : "—"}
-            </div>
+            </p>
           </div>
-        </div>
-
-        {/* VIX section */}
-        <div className="flex-1">
-          <div className="text-center">
-            <div className="text-sm text-gray-500 mb-1">VIX</div>
-            <div className="text-2xl font-bold text-gray-700">
+          <div className="min-w-[120px]">
+            <p className="text-body-xs uppercase tracking-[0.3em] text-muted-foreground text-center">
+              VIX
+            </p>
+            <p className="text-heading-lg text-center font-semibold text-foreground">
               {vix?.value ? vix.value.toFixed(1) : "—"}
-            </div>
+            </p>
           </div>
         </div>
-      </div>
 
-      {/* Performance metrics row */}
-      <div className="flex items-center gap-4 text-sm">
-        <div className="flex items-center gap-1">
-          <span className="text-gray-500">5D:</span>
-          <span className={`${(momentum?.r5d_pct ?? 0) < 0 ? "text-red-600" : "text-green-700"}`}>
-            {percent(momentum?.r5d_pct ?? undefined)}
-          </span>
+        <div className="flex flex-wrap gap-4 text-body">
+          {[
+            { label: "5D", value: momentum?.r5d_pct },
+            { label: "1M", value: momentum?.r1m_pct },
+            { label: "MTD", value: rets?.MTD },
+            { label: "YTD", value: rets?.YTD },
+          ].map(({ label, value }) => (
+            <div key={label} className="flex items-center gap-2">
+              <span className="text-muted-foreground">{label}:</span>
+              <span className={`${(value ?? 0) < 0 ? "text-destructive" : "text-success"}`}>
+                {percent(value ?? undefined)}
+              </span>
+            </div>
+          ))}
         </div>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-500">1M:</span>
-          <span className={`${(momentum?.r1m_pct ?? 0) < 0 ? "text-red-600" : "text-green-700"}`}>
-            {percent(momentum?.r1m_pct ?? undefined)}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-500">MTD:</span>
-          <span className={`${(rets?.MTD ?? 0) < 0 ? "text-red-600" : "text-green-700"}`}>
-            {percent(rets?.MTD ?? undefined)}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="text-gray-500">YTD:</span>
-          <span className={`${(rets?.YTD ?? 0) < 0 ? "text-red-600" : "text-green-700"}`}>
-            {percent(rets?.YTD ?? undefined)}
-          </span>
-        </div>
-      </div>
 
-      {loading && <div className="mt-2 text-xs text-gray-500">Loading…</div>}
-      {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
-    </div>
+        {loading ? <p className="text-body-xs text-muted-foreground">Loading…</p> : null}
+        {error ? <p className="text-body-xs text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
   );
 }

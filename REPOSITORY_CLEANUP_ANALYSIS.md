@@ -354,38 +354,33 @@ This document analyzes the repository structure, cross-references it with actual
 
 ---
 
-### ❌ **REMOVE: Duplicate Lock Files**
+### ⚠️ **REVIEW: Lock Files**
 
-**Files**:
-- `package-lock.json` (root level)
+**Files (current)**:
 - `frontend/package-lock.json`
 - `frontend/pnpm-lock.yaml`
 
 **Analysis**:
-- Root level `package-lock.json` - **UNNECESSARY** - No Node.js project at root
-- `frontend/package-lock.json` and `pnpm-lock.yaml` - **CHOOSE ONE**
-  - Typically use one package manager (npm OR pnpm)
-  - Having both causes confusion
+- There is no longer a root-level `package-lock.json` – that duplicate has been removed.
+- `frontend/package-lock.json` and `pnpm-lock.yaml` are both present; in practice, development docs use `npm` (`npm install`, `npm run dev`), so `package-lock.json` is the primary lock file.
 
 **Recommendation**:
-- Remove root `package-lock.json`
-- Choose one package manager for frontend (npm or pnpm) and remove the other lock file
+- Keep `frontend/package-lock.json` as the canonical lock file if standardizing on `npm`.
+- Remove `frontend/pnpm-lock.yaml` (or update the docs to standardize on `pnpm` instead).
 
-**Verdict**: **REMOVE** root `package-lock.json`, **CHOOSE ONE** for frontend
+**Verdict**: **CHOOSE ONE** lock file for the frontend; `npm` is currently the documented default.
 
 ---
 
-### ❌ **REMOVE: Log Files**
+### ✅ **LOG FILES: Now Ignored**
 
-**Files**:
-- `uvicorn.log` - Uvicorn server log
+**Previous Issue**:
+- `uvicorn.log` and other logs were committed instead of ignored.
 
-**Analysis**:
-- Log files should not be committed
-- Should be in `.gitignore`
-- Generated at runtime
+**Current State**:
+- `.gitignore` now ignores `*.log` and the `logs/` directory, and any previously committed log files have been removed.
 
-**Verdict**: **REMOVE** - Should not be committed
+**Verdict**: **RESOLVED** – Logging is now handled as runtime output and excluded from version control.
 
 ---
 
@@ -521,4 +516,3 @@ Core configuration files:
 - Some duplication is intentional (providers) and good architecture
 - Most cleanup is removing files that shouldn't be committed (logs, venv, lock files)
 - Critical fixes needed before broken code causes issues
-

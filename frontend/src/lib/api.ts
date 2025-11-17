@@ -103,6 +103,29 @@ function requestWithInflight<T>(key: string, factory: () => Promise<T>): Promise
   return promise;
 }
 
+type QueryValue = string | number | boolean | null | undefined;
+
+function buildQuery(params?: Record<string, QueryValue>): string {
+  const entries = Object.entries(params ?? {}).filter(([, value]) => {
+    if (value === undefined || value === null) {
+      return false;
+    }
+    if (typeof value === "string") {
+      return value.trim().length > 0;
+    }
+    return true;
+  });
+  if (!entries.length) {
+    return "";
+  }
+  const search = new URLSearchParams();
+  for (const [key, value] of entries) {
+    search.append(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
 export async function getJSON<T>(path: string): Promise<T> {
   const cacheKey = getCacheKey(BASE, path);
   const cached = readCache<T>(cacheKey);
@@ -385,6 +408,525 @@ export async function createSector(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+// ---------------- Journal types ----------------
+export type JournalTradeDirection = "long" | "short";
+export type JournalTradeStatus = "open" | "closed";
+
+export interface JournalTrade {
+  id: string;
+  ticker: string;
+  direction: JournalTradeDirection;
+  status: JournalTradeStatus;
+  entry_price: number;
+  exit_price: number | null;
+  position_size: number;
+  entry_time: string;
+  exit_time: string | null;
+  stop_price: number | null;
+  what_they_saw: string | null;
+  exit_plan: string | null;
+  feelings: string | null;
+  notes: string | null;
+  percent_pl: number | null;
+  dollar_pl: number | null;
+  hold_time_seconds: number | null;
+  r_multiple: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JournalTradeCreatePayload {
+  ticker: string;
+  direction: JournalTradeDirection;
+  status: JournalTradeStatus;
+  entry_price: number;
+  exit_price?: number | null;
+  position_size: number;
+  entry_time: string;
+  exit_time?: string | null;
+  stop_price?: number | null;
+  what_they_saw?: string | null;
+  exit_plan?: string | null;
+  feelings?: string | null;
+  notes?: string | null;
+}
+
+export type JournalTradeUpdatePayload = Partial<JournalTradeCreatePayload>;
+
+export interface JournalTradeListParams {
+  ticker?: string;
+  status?: JournalTradeStatus;
+  start_date?: string;
+  end_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface JournalTicker {
+  symbol: string;
+  name: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JournalTickerUpdatePayload {
+  name?: string | null;
+  notes?: string | null;
+}
+
+export interface JournalSetup {
+  id: string;
+  name: string;
+  description: string | null;
+  rules: string[];
+  ideal_screenshot_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JournalSetupCreatePayload {
+  name: string;
+  description?: string | null;
+  rules?: string[];
+}
+
+export interface JournalSetupUpdatePayload {
+  name?: string;
+  description?: string | null;
+  rules?: string[];
+  ideal_screenshot_id?: string | null;
+}
+
+export interface JournalSetupReview {
+  id: string;
+  ticker_symbol: string;
+  setup_id: string | null;
+  trade_id: string | null;
+  date: string;
+  notes: string | null;
+  did_take_trade: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JournalSetupReviewCreatePayload {
+  ticker_symbol: string;
+  setup_id?: string | null;
+  trade_id?: string | null;
+  date: string;
+  notes?: string | null;
+  did_take_trade: boolean;
+}
+
+export type JournalSetupReviewUpdatePayload = Partial<JournalSetupReviewCreatePayload>;
+
+export interface JournalSetupReviewListParams {
+  ticker_symbol?: string;
+  setup_id?: string;
+  did_take_trade?: boolean;
+  start_date?: string;
+  end_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface JournalScreenshot {
+  id: string;
+  url: string;
+  caption: string | null;
+  target_type: string;
+  target_id: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface JournalScreenshotCreatePayload {
+  url: string;
+  caption?: string | null;
+}
+
+export interface TickerProfile {
+  ticker: JournalTicker;
+  trades: JournalTrade[];
+  setup_reviews: JournalSetupReview[];
+}
+
+export interface TickerProfileFilters {
+  setup_id?: string;
+  outcome?: "all" | "winners" | "losers";
+}
+
+export interface DailyNote {
+  id: string;
+  date: string;
+  premarket_notes: string | null;
+  eod_notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DailyNoteWithTrades {
+  note: DailyNote;
+  trades: JournalTrade[];
+}
+
+export interface DailyNoteCreateOrUpdatePayload {
+  date: string;
+  premarket_notes?: string | null;
+  eod_notes?: string | null;
+}
+
+export interface DailyNoteListParams {
+  start_date?: string;
+  end_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface DailyNoteAttachTradesPayload {
+  trade_ids: string[];
+  role?: string;
+}
+
+export interface WeeklyNote {
+  id: string;
+  week_start_date: string;
+  week_end_date: string | null;
+  text: string | null;
+  trade_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WeeklyNoteWithTrades {
+  note: WeeklyNote;
+  trades: JournalTrade[];
+}
+
+export interface WeeklyNoteCreateOrUpdatePayload {
+  week_start_date: string;
+  week_end_date?: string | null;
+  text?: string | null;
+}
+
+export interface WeeklyNoteListParams {
+  start_week?: string;
+  end_week?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface WeeklyNoteAttachTradesPayload {
+  trade_ids: string[];
+  role?: string;
+}
+
+export async function fetchJournalTrades(
+  params?: JournalTradeListParams,
+): Promise<JournalTrade[]> {
+  const query = buildQuery({
+    ticker: params?.ticker,
+    status: params?.status,
+    start_date: params?.start_date,
+    end_date: params?.end_date,
+    limit: params?.limit,
+    offset: params?.offset,
+  });
+  return getJSONNoCache<JournalTrade[]>(`/journal/trades${query}`);
+}
+
+export async function fetchJournalTrade(id: string): Promise<JournalTrade> {
+  return getJSONNoCache<JournalTrade>(`/journal/trades/${encodeURIComponent(id)}`);
+}
+
+export async function createJournalTrade(
+  payload: JournalTradeCreatePayload,
+): Promise<JournalTrade> {
+  return requestJSON<JournalTrade>("/journal/trades", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateJournalTrade(
+  id: string,
+  payload: JournalTradeUpdatePayload,
+): Promise<JournalTrade> {
+  return requestJSON<JournalTrade>(`/journal/trades/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteJournalTrade(id: string): Promise<void> {
+  await requestJSON<void>(`/journal/trades/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function fetchJournalTickers(): Promise<JournalTicker[]> {
+  return getJSONNoCache<JournalTicker[]>("/journal/tickers");
+}
+
+export async function updateJournalTicker(
+  symbol: string,
+  payload: JournalTickerUpdatePayload,
+): Promise<JournalTicker> {
+  return requestJSON<JournalTicker>(`/journal/tickers/${encodeURIComponent(symbol)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchTickerProfile(
+  symbol: string,
+  filters?: TickerProfileFilters,
+): Promise<TickerProfile> {
+  const query = buildQuery({
+    setup_id: filters?.setup_id,
+    outcome: filters?.outcome,
+  });
+  return getJSONNoCache<TickerProfile>(`/journal/tickers/${encodeURIComponent(symbol)}${query}`);
+}
+
+export async function fetchJournalSetups(): Promise<JournalSetup[]> {
+  return getJSONNoCache<JournalSetup[]>("/journal/setups");
+}
+
+export async function fetchJournalSetup(id: string): Promise<JournalSetup> {
+  return getJSONNoCache<JournalSetup>(`/journal/setups/${encodeURIComponent(id)}`);
+}
+
+export async function createJournalSetup(
+  payload: JournalSetupCreatePayload,
+): Promise<JournalSetup> {
+  return requestJSON<JournalSetup>("/journal/setups", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateJournalSetup(
+  id: string,
+  payload: JournalSetupUpdatePayload,
+): Promise<JournalSetup> {
+  return requestJSON<JournalSetup>(`/journal/setups/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteJournalSetup(id: string): Promise<void> {
+  await requestJSON<void>(`/journal/setups/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function fetchJournalSetupReviews(
+  params?: JournalSetupReviewListParams,
+): Promise<JournalSetupReview[]> {
+  const query = buildQuery({
+    ticker_symbol: params?.ticker_symbol,
+    setup_id: params?.setup_id,
+    did_take_trade: params?.did_take_trade,
+    start_date: params?.start_date,
+    end_date: params?.end_date,
+    limit: params?.limit,
+    offset: params?.offset,
+  });
+  return getJSONNoCache<JournalSetupReview[]>(`/journal/setup-reviews${query}`);
+}
+
+export async function fetchJournalSetupReview(id: string): Promise<JournalSetupReview> {
+  return getJSONNoCache<JournalSetupReview>(`/journal/setup-reviews/${encodeURIComponent(id)}`);
+}
+
+export async function createJournalSetupReview(
+  payload: JournalSetupReviewCreatePayload,
+): Promise<JournalSetupReview> {
+  return requestJSON<JournalSetupReview>("/journal/setup-reviews", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateJournalSetupReview(
+  id: string,
+  payload: JournalSetupReviewUpdatePayload,
+): Promise<JournalSetupReview> {
+  return requestJSON<JournalSetupReview>(`/journal/setup-reviews/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteJournalSetupReview(id: string): Promise<void> {
+  await requestJSON<void>(`/journal/setup-reviews/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function attachTradeScreenshot(
+  tradeId: string,
+  payload: JournalScreenshotCreatePayload,
+): Promise<JournalScreenshot> {
+  return requestJSON<JournalScreenshot>(
+    `/journal/trades/${encodeURIComponent(tradeId)}/screenshots`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function fetchTradeScreenshots(tradeId: string): Promise<JournalScreenshot[]> {
+  return getJSONNoCache<JournalScreenshot[]>(
+    `/journal/trades/${encodeURIComponent(tradeId)}/screenshots`,
+  );
+}
+
+export async function attachSetupReviewScreenshot(
+  reviewId: string,
+  payload: JournalScreenshotCreatePayload,
+): Promise<JournalScreenshot> {
+  return requestJSON<JournalScreenshot>(
+    `/journal/setup-reviews/${encodeURIComponent(reviewId)}/screenshots`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function fetchSetupReviewScreenshots(
+  reviewId: string,
+): Promise<JournalScreenshot[]> {
+  return getJSONNoCache<JournalScreenshot[]>(
+    `/journal/setup-reviews/${encodeURIComponent(reviewId)}/screenshots`,
+  );
+}
+
+export async function fetchDailyNotes(params?: DailyNoteListParams): Promise<DailyNote[]> {
+  const query = buildQuery({
+    start_date: params?.start_date,
+    end_date: params?.end_date,
+    limit: params?.limit,
+    offset: params?.offset,
+  });
+  return getJSONNoCache<DailyNote[]>(`/journal/daily-notes${query}`);
+}
+
+export async function fetchDailyNote(id: string): Promise<DailyNote> {
+  return getJSONNoCache<DailyNote>(`/journal/daily-notes/${encodeURIComponent(id)}`);
+}
+
+export async function fetchDailyNoteWithTrades(id: string): Promise<DailyNoteWithTrades> {
+  return getJSONNoCache<DailyNoteWithTrades>(
+    `/journal/daily-notes/${encodeURIComponent(id)}/trades`,
+  );
+}
+
+export async function createOrUpdateDailyNote(
+  payload: DailyNoteCreateOrUpdatePayload,
+): Promise<DailyNote> {
+  return requestJSON<DailyNote>("/journal/daily-notes", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function attachTradesToDailyNote(
+  noteId: string,
+  payload: DailyNoteAttachTradesPayload,
+): Promise<DailyNoteWithTrades> {
+  return requestJSON<DailyNoteWithTrades>(
+    `/journal/daily-notes/${encodeURIComponent(noteId)}/trades`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function detachTradeFromDailyNote(noteId: string, tradeId: string): Promise<void> {
+  await requestJSON<void>(
+    `/journal/daily-notes/${encodeURIComponent(noteId)}/trades/${encodeURIComponent(tradeId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export async function fetchDailyNoteByDate(date: string): Promise<DailyNote | null> {
+  const notes = await fetchDailyNotes({
+    start_date: date,
+    end_date: date,
+    limit: 1,
+  });
+  return notes[0] ?? null;
+}
+
+export async function fetchWeeklyNotes(params?: WeeklyNoteListParams): Promise<WeeklyNote[]> {
+  const query = buildQuery({
+    start_week: params?.start_week,
+    end_week: params?.end_week,
+    limit: params?.limit,
+    offset: params?.offset,
+  });
+  return getJSONNoCache<WeeklyNote[]>(`/journal/weekly-notes${query}`);
+}
+
+export async function fetchWeeklyNote(id: string): Promise<WeeklyNote> {
+  return getJSONNoCache<WeeklyNote>(`/journal/weekly-notes/${encodeURIComponent(id)}`);
+}
+
+export async function fetchWeeklyNoteWithTrades(id: string): Promise<WeeklyNoteWithTrades> {
+  return getJSONNoCache<WeeklyNoteWithTrades>(
+    `/journal/weekly-notes/${encodeURIComponent(id)}/trades`,
+  );
+}
+
+export async function createOrUpdateWeeklyNote(
+  payload: WeeklyNoteCreateOrUpdatePayload,
+): Promise<WeeklyNote> {
+  return requestJSON<WeeklyNote>("/journal/weekly-notes", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function attachTradesToWeeklyNote(
+  noteId: string,
+  payload: WeeklyNoteAttachTradesPayload,
+): Promise<WeeklyNoteWithTrades> {
+  return requestJSON<WeeklyNoteWithTrades>(
+    `/journal/weekly-notes/${encodeURIComponent(noteId)}/trades`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function detachTradeFromWeeklyNote(noteId: string, tradeId: string): Promise<void> {
+  await requestJSON<void>(
+    `/journal/weekly-notes/${encodeURIComponent(noteId)}/trades/${encodeURIComponent(tradeId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+export async function fetchWeeklyNoteByStart(weekStartDate: string): Promise<WeeklyNote | null> {
+  const notes = await fetchWeeklyNotes({
+    start_week: weekStartDate,
+    end_week: weekStartDate,
+    limit: 1,
+  });
+  return notes[0] ?? null;
 }
 
 // Breadth endpoints removed - not needed

@@ -1,4 +1,31 @@
 import React, { useEffect, useMemo, useState } from "react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+
 import type { MomentumResponse, TrendResponse } from "../lib/api";
 import { fetchMomentum, fetchTrend } from "../lib/api";
 
@@ -46,16 +73,16 @@ function toErrorMessage(error: unknown): string {
 
 function formatPercent(value: number | null): { text: string; tone: string } {
   if (value === null || Number.isNaN(value)) {
-    return { text: "—", tone: "text-gray-400" };
+    return { text: "—", tone: "text-muted-foreground" };
   }
   const sign = value >= 0 ? "+" : "";
-  const tone = value >= 0 ? "text-green-400" : "text-red-400";
+  const tone = value >= 0 ? "text-success" : "text-destructive";
   return { text: `${sign}${value.toFixed(2)}%`, tone };
 }
 
 export default function SectorEtfOverview(): React.ReactElement {
   const [snapshots, setSnapshots] = useState<Record<string, TickerSnapshot>>({});
-  const [expanded, setExpanded] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
   useEffect(() => {
@@ -173,167 +200,140 @@ export default function SectorEtfOverview(): React.ReactElement {
     setSortDirection((prev) => (prev === "desc" ? "asc" : "desc"));
   };
 
-  useEffect(() => {
-    if (!expanded) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setExpanded(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [expanded]);
-
   return (
-    <section className="flex h-full min-h-0 flex-col rounded border border-gray-800 bg-gray-900 p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-200">Sector Overview</h3>
-        <div className="flex items-center gap-3">
-          {latestDate ? (
-            <span className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
-              As of {latestDate}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => setExpanded((prev) => !prev)}
-            className="flex items-center justify-center rounded-md border border-gray-700 px-2 py-1 text-[11px] font-medium text-gray-300 hover:border-primary-500 hover:text-primary-400"
-            aria-expanded={expanded}
-            aria-label={expanded ? "Hide sector performance table" : "Show sector performance table"}
-          >
-            {expanded ? "-" : "+"}
-          </button>
-        </div>
-      </div>
-
-      <ul
-        className="grid flex-1 list-none gap-1 min-h-0 p-0 m-0"
-        style={rowTemplate ? { gridTemplateRows: rowTemplate } : undefined}
-      >
-        {visibleEtfs.map(({ symbol, name, color }) => {
-          const snapshot = snapshots[symbol];
-          const change = computeChangePct(snapshot?.trend ?? null);
-          const display = formatPercent(change);
-          const loading = snapshot?.loading;
-          const error = snapshot?.error;
-          const scaledFill =
-            change === null || !Number.isFinite(change) || maxAbsChange === 0
-              ? 0
-              : Math.min(100, Math.round((Math.abs(change) / maxAbsChange) * 100));
-          const positiveFill = change !== null && change > 0 ? scaledFill : 0;
-          const negativeFill = change !== null && change < 0 ? scaledFill : 0;
-
-          return (
-            <li
-              key={symbol}
-              className="flex h-full items-center rounded-lg border border-gray-800 bg-gray-850 px-3"
-            >
-              <div className="grid h-full w-full grid-cols-[auto_auto_1fr_auto] items-stretch gap-3">
-                <span
-                  className="h-full w-2 self-stretch rounded-full"
-                  style={{ backgroundColor: color }}
-                  aria-hidden="true"
-                />
-                <span className="flex h-10 w-8 items-center justify-center self-center rounded-md bg-gray-800 font-mono text-xs text-gray-100">
-                  {symbol}
-                </span>
-                <div className="flex h-full flex-col justify-center self-stretch text-left">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-300">
-                    {name}
-                  </div>
-                  <div className="text-[10px] text-gray-500">
-                    {loading ? "Loading…" : error ? error : "\u00A0"}
-                  </div>
-                </div>
-
-                <div className="flex flex-col justify-center text-right">
-                  <div className={`text-sm font-semibold ${display.tone}`}>{display.text}</div>
-                  <div className="relative mt-1 flex h-2 w-24 overflow-hidden rounded-full bg-gray-800">
-                    <span className="pointer-events-none absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-gray-700" />
-                    <div className="relative flex-1">
-                      <div
-                        className="absolute inset-y-0 right-0 rounded-l-full bg-red-400 transition-all duration-300"
-                        style={{ width: `${negativeFill}%` }}
-                      />
-                    </div>
-                    <div className="relative flex-1">
-                      <div
-                        className="absolute inset-y-0 left-0 rounded-r-full bg-green-400 transition-all duration-300"
-                        style={{ width: `${positiveFill}%` }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      {expanded ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Sector performance table"
-          onClick={() => setExpanded(false)}
-        >
-          <div
-            className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-lg border border-gray-700 bg-gray-900 shadow-xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
-              <h4 className="text-sm font-semibold text-gray-200">Sector Performance</h4>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setExpanded(false)}
-                  className="rounded border border-gray-700 px-2 py-1 text-[11px] font-medium text-gray-300 hover:border-primary-500 hover:text-primary-400"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-            <div className="max-h-[65vh] overflow-auto">
-              <table className="min-w-full table-fixed border-separate border-spacing-y-1 text-[11px] text-gray-200">
-                <thead className="sticky top-0 bg-gray-900 text-[10px] uppercase tracking-wide text-gray-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Symbol</th>
-                    <th className="px-3 py-2 text-left">Name</th>
-                    <th className="px-3 py-2 text-right">
-                      <button
-                        type="button"
-                        onClick={handleSortToggle}
-                        className="inline-flex items-center gap-1 text-gray-400 hover:text-primary-300"
-                      >
-                        % Day
-                        <span className="text-[9px] uppercase">{sortDirection}</span>
-                      </button>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedEtfs.map(({ symbol, name }) => {
-                    const snapshot = snapshots[symbol];
-                    const dayChange = computeChangePct(snapshot?.trend ?? null);
-                    const dayDisplay = formatPercent(dayChange);
-                    return (
-                      <tr key={`table-${symbol}`} className="rounded bg-gray-850">
-                        <td className="px-3 py-2 font-mono text-xs text-gray-100">{symbol}</td>
-                        <td className="px-3 py-2 text-left text-[11px] text-gray-300">{name}</td>
-                        <td className={`px-3 py-2 text-right font-semibold ${dayDisplay.tone}`}>
-                          {dayDisplay.text}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+    <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Card className="flex h-full min-h-0 min-w-0 flex-col bg-background-raised">
+        <CardHeader className="flex items-center justify-between px-panel pt-panel pb-gutter">
+          <CardTitle className="text-heading-md">Sector Overview</CardTitle>
+          <div className="flex items-center gap-2 text-body-xs text-muted-foreground">
+            {latestDate ? <span>{latestDate}</span> : null}
+            <DialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-expanded={dialogOpen}
+                className="text-body-xs text-muted-foreground hover:text-foreground"
+              >
+                Table
+              </Button>
+            </DialogTrigger>
           </div>
+        </CardHeader>
+
+        <CardContent className="flex flex-1 flex-col px-panel pb-panel pt-0">
+          <ul
+            className="grid min-h-0 list-none gap-2 p-0"
+            style={rowTemplate ? { gridTemplateRows: rowTemplate } : undefined}
+          >
+            {visibleEtfs.map(({ symbol, name, color }) => {
+              const snapshot = snapshots[symbol];
+              const change = computeChangePct(snapshot?.trend ?? null);
+              const display = formatPercent(change);
+              const loading = snapshot?.loading;
+              const error = snapshot?.error;
+              const scaledFill =
+                change === null || !Number.isFinite(change) || maxAbsChange === 0
+                  ? 0
+                  : Math.min(100, Math.round((Math.abs(change) / maxAbsChange) * 100));
+              const positiveFill = change !== null && change > 0 ? scaledFill : 0;
+              const negativeFill = change !== null && change < 0 ? scaledFill : 0;
+
+              return (
+                <li
+                  key={symbol}
+                  className="grid grid-cols-[auto_auto_1fr_auto] items-center gap-3 rounded-lg border border-border bg-background px-3 py-3"
+                >
+                  <span
+                    className="h-8 w-1 rounded-full"
+                    style={{ backgroundColor: color }}
+                    aria-hidden="true"
+                  />
+                  <Badge
+                    variant="outline"
+                    className="flex h-8 w-12 items-center justify-center font-mono text-body"
+                  >
+                    {symbol}
+                  </Badge>
+                  <div className="min-w-0">
+                    <p className="text-body font-semibold text-foreground">{name}</p>
+                    <p className="text-body-xs text-muted-foreground">
+                      {loading ? "Loading…" : error ? error : "\u00A0"}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-2 text-right">
+                    <p className={`text-heading-sm font-semibold ${display.tone}`}>
+                      {display.text}
+                    </p>
+                    <div className="relative flex h-2 w-24 overflow-hidden rounded-full bg-background-muted">
+                      <span className="pointer-events-none absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-border" />
+                      <div className="relative flex-1">
+                        <div
+                          className="absolute inset-y-0 right-0 rounded-l-full bg-destructive/70 transition-all duration-300"
+                          style={{ width: `${negativeFill}%` }}
+                        />
+                      </div>
+                      <div className="relative flex-1">
+                        <div
+                          className="absolute inset-y-0 left-0 rounded-r-full bg-success/80 transition-all duration-300"
+                          style={{ width: `${positiveFill}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </CardContent>
+      </Card>
+
+      <DialogContent className="max-w-4xl space-y-4 bg-background-raised">
+        <DialogHeader>
+          <DialogTitle className="text-heading-md">Sector Performance</DialogTitle>
+          <DialogDescription className="text-body text-muted-foreground">
+            Toggle the % day column to flip between gainers and laggards.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-xl border border-border bg-background">
+          <ScrollArea className="max-h-[60vh]">
+            <Table>
+              <TableHeader className="sticky top-0 bg-background-raised">
+                <TableRow>
+                  <TableHead>Symbol</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleSortToggle}
+                      className="h-auto px-2 py-0 text-body-xs text-muted-foreground hover:text-foreground"
+                    >
+                      % Day
+                      <span className="ml-2 text-[10px] uppercase">{sortDirection}</span>
+                    </Button>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sortedEtfs.map(({ symbol, name }) => {
+                  const snapshot = snapshots[symbol];
+                  const dayChange = computeChangePct(snapshot?.trend ?? null);
+                  const dayDisplay = formatPercent(dayChange);
+                  return (
+                    <TableRow key={`table-${symbol}`}>
+                      <TableCell className="font-mono text-body">{symbol}</TableCell>
+                      <TableCell className="text-body text-muted-foreground">{name}</TableCell>
+                      <TableCell className={`text-right font-semibold ${dayDisplay.tone}`}>
+                        {dayDisplay.text}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </ScrollArea>
         </div>
-      ) : null}
-    </section>
+      </DialogContent>
+    </Dialog>
   );
 }

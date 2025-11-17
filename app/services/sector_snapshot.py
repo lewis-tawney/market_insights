@@ -51,7 +51,7 @@ class SnapshotNotFoundError(Exception):
 
 
 def get_sector_lock(sector_id: str) -> asyncio.Lock:
-    key = sector_id.strip().upper()
+    key = sector_id.strip().lower()
     lock = _SECTOR_LOCKS.get(key)
     if lock is None:
         lock = asyncio.Lock()
@@ -874,6 +874,73 @@ def compute_snapshot_metadata(payload: Mapping[str, Any]) -> Dict[str, Any]:
         "members_count": members_count,
         "stale": stale,
     }
+
+
+def export_sectors_to_json(output_path: Path) -> None:
+    """Export current sector definitions and membership from DuckDB to JSON.
+
+    This is intended as a human-readable snapshot of the live sector universe,
+    not as an authoritative source of truth for the application.
+    """
+    conn = duckdb.connect(str(SNAPSHOT_DB))
+    try:
+        try:
+            defs = conn.execute(
+                """
+                SELECT sector_id, name, sort_order
+                FROM sector_definitions
+                ORDER BY sort_order ASC NULLS LAST, sector_id
+                """
+            ).fetchall()
+        except duckdb.Error:
+            defs = []
+
+        if not defs:
+            payload = {"sectors": []}
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(payload, indent=2))
+            return
+
+        members_by_sector: Dict[str, List[str]] = {str(sector_id): [] for sector_id, _, _ in defs}
+        try:
+            rows = conn.execute(
+                """
+                SELECT sector_id, symbol
+                FROM sectors_map
+                ORDER BY sector_id, symbol
+                """
+            ).fetchall()
+        except duckdb.Error:
+            rows = []
+
+        for sector_id, symbol in rows:
+            if sector_id is None or symbol is None:
+                continue
+            key = str(sector_id)
+            if key not in members_by_sector:
+                continue
+            cleaned = str(symbol).strip().upper()
+            if cleaned and cleaned not in members_by_sector[key]:
+                members_by_sector[key].append(cleaned)
+
+        sectors_payload: List[Dict[str, Any]] = []
+        for sector_id, name, sort_order in defs:
+            key = str(sector_id)
+            display_name = str(name) if name is not None else key
+            sectors_payload.append(
+                {
+                    "id": key,
+                    "name": display_name,
+                    "sort_order": sort_order,
+                    "tickers": members_by_sector.get(key, []),
+                }
+            )
+
+        payload = {"sectors": sectors_payload}
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, indent=2))
+    finally:
+        conn.close()
 
 
 def _ensure_writable_dir(path: Path) -> bool:

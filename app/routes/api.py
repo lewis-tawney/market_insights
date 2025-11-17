@@ -127,7 +127,7 @@ async def create_sector(payload: SectorCreateRequest, request: Request):
     if not sanitized_tickers:
         raise HTTPException(status_code=400, detail="Tickers list cannot be empty")
     sector = SectorIn(
-        id=payload.id.strip().upper(),
+        id=payload.id.strip().lower(),
         name=payload.name.strip(),
         tickers=sanitized_tickers,
     )

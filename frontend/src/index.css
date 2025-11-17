@@ -1,3 +1,94 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 32% 7%;
+    --background-muted: 222 28% 9%;
+    --background-raised: 223 24% 12%;
+
+    --foreground: 210 40% 96%;
+    --muted: 222 23% 16%;
+    --muted-foreground: 214 15% 70%;
+
+    --card: 222 27% 11%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 32% 9%;
+    --popover-foreground: 210 40% 96%;
+
+    --border: 218 19% 21%;
+    --input: 218 19% 21%;
+    --ring: 183 85% 59%;
+    --ring-accent: 151 76% 51%;
+
+    --primary: 183 85% 56%;
+    --primary-foreground: 227 36% 12%;
+
+    --secondary: 151 69% 46%;
+    --secondary-foreground: 221 35% 12%;
+
+    --accent: 199 76% 54%;
+    --accent-foreground: 223 34% 12%;
+
+    --destructive: 343 80% 60%;
+    --destructive-foreground: 0 0% 98%;
+
+    --success: 151 69% 46%;
+    --success-foreground: 0 0% 8%;
+
+    --warning: 35 93% 63%;
+    --warning-foreground: 221 36% 14%;
+
+    --radius: 0.6rem;
+  }
+
+  .dark {
+    --background: 222 32% 7%;
+    --background-muted: 222 28% 9%;
+    --background-raised: 223 24% 12%;
+
+    --foreground: 210 40% 96%;
+    --muted: 222 23% 16%;
+    --muted-foreground: 214 15% 70%;
+
+    --card: 222 27% 11%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 32% 9%;
+    --popover-foreground: 210 40% 96%;
+
+    --border: 218 19% 21%;
+    --input: 218 19% 21%;
+    --ring: 183 85% 59%;
+    --ring-accent: 151 76% 51%;
+
+    --primary: 183 85% 56%;
+    --primary-foreground: 227 36% 12%;
+
+    --secondary: 151 69% 46%;
+    --secondary-foreground: 221 35% 12%;
+
+    --accent: 199 76% 54%;
+    --accent-foreground: 223 34% 12%;
+
+    --destructive: 343 80% 60%;
+    --destructive-foreground: 0 0% 98%;
+
+    --success: 151 69% 46%;
+    --success-foreground: 0 0% 8%;
+
+    --warning: 35 93% 63%;
+    --warning-foreground: 221 36% 14%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans text-body antialiased;
+    min-height: 100vh;
+  }
+}

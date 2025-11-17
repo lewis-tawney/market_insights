@@ -22,6 +22,7 @@ from app.middleware import rate_limit_middleware, rate_limiter
 from app.providers import get_provider
 from app.routes.api import router as api_router
 from app.routes.metrics import router as metrics_router
+from app.routes.journal import router as journal_router
 from app.services import sector_snapshot
 from app.services.jobs import JobManager
 from engine.cache import CacheManager
@@ -196,6 +197,7 @@ logger.info("Market Insights API starting up...")
 # Routes
 app.include_router(api_router)
 app.include_router(metrics_router)
+app.include_router(journal_router)
 # Chart routes removed - frontend uses /stock/{symbol} endpoint instead
 
 

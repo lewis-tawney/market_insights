@@ -173,10 +173,16 @@ pytest --cov=app --cov=engine
 
 ## 📊 Architecture
 
-## 📈 Candlestick Data
+The system has three main layers:
 
-- Backend REST: `GET /chart-data?symbol=AAPL&period=6mo&interval=1d` returns a list of `{ time:'YYYY-MM-DD', open, high, low, close, volume }`. Missing sessions include whitespace bars as `{ time }`.
-- Backend WS: `GET /ws/candles?symbol=AAPL&interval=1m` streams a simulated bar every minute with `{ time:'YYYY-MM-DDTHH:mm:00Z', open, high, low, close, volume }`.
+- **Backend API** (`app/`) – FastAPI application exposing REST endpoints used by the frontend.
+- **Analysis Engine** (`engine/`) – Metrics, caching, and provider interfaces for market data.
+- **Frontend** (`frontend/`) – React + TypeScript SPA that consumes the API and renders dashboards.
+
+### 📈 Candlestick Data
+
+- Backend REST: `GET /stock/{symbol}` or `GET /api/stock/{symbol}` returns a list of `{ time:'YYYY-MM-DD', open, high, low, close, volume }` OHLCV bars.
+- Missing sessions are returned as gaps in the time series; only bars with complete OHLC data are included.
 
 Run locally:
 ```bash
@@ -187,36 +193,37 @@ cd frontend && npm i && npm run dev
 Docker (prod-like):
 ```bash
 docker compose up -d --build
-curl "http://localhost/api/chart-data?symbol=AAPL"
+curl "http://localhost/api/stock/AAPL"
 ```
 
 ```
 app/
-├── main.py              # FastAPI application entry point
-├── config.py            # Configuration management
-└── routes/
-    ├── api.py           # Core API endpoints
-    └── market_strength.py # Market strength analysis endpoints
+├── main.py               # FastAPI application entry point and wiring
+├── config.py             # Configuration management
+├── routes/
+│   ├── api.py            # Core API endpoints (price, screen, compass, tasks, health)
+│   └── metrics.py        # Market strength and metrics endpoints
+└── services/             # Snapshot, candles/DuckDB, and job helpers
 
 engine/
-├── cache.py             # Multi-tier caching system
-├── metrics.py           # Technical analysis functions
+├── cache.py              # Multi-tier caching system
+├── metrics.py            # Technical analysis functions
 └── providers/
-    ├── base.py          # Abstract provider interface
-    ├── market_data_provider.py # Market data implementation
-    └── cached_provider.py # Cached wrapper
+    ├── base.py           # MarketData Protocol / abstract interface
+    ├── massive_provider.py  # Massive API implementation
+    └── synthetic.py      # Synthetic provider used in tests and experiments
 ```
 
 ## 🔧 Development
 
 ### Adding New Data Providers
 1. Implement the `MarketData` interface in `engine/providers/base.py`
-2. Add your provider class in `engine/providers/`
-3. Update `app/main.py` to use your provider
+2. Add your provider class in `engine/providers/` (e.g. `my_provider.py`)
+3. Wire it into `app/providers/factory.py` and select it via `providers.default` in `config.yaml`
 
 ### Adding New Market Lenses
-1. Add your analysis function to `app/routes/market_strength.py`
-2. Update the summary endpoint to include your lens
+1. Add your analysis function to `app/routes/metrics.py` (and `engine/metrics.py` if you need shared helpers)
+2. Update the `/market_strength/summary` endpoint in `app/routes/metrics.py` to include your lens
 3. Add configuration options to `config.example.yaml`
 
 ## 📈 Performance

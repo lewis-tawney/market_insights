@@ -1,4 +1,13 @@
 import React, { useEffect, useState } from "react";
+
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+
 import { fixed2 } from "../lib/format";
 // Breadth functionality removed
 import type { TrendResponse, VixResponse } from "../lib/api";
@@ -33,7 +42,7 @@ export function VixCard(): React.ReactElement {
     let alive = true;
     (async () => {
       try {
-    const d = await getJSON<VixResponse>(`/metrics/vix`);
+        const d = await getJSON<VixResponse>(`/metrics/vix`);
         if (!alive) return;
         setData(d);
       } catch (e: any) {
@@ -45,12 +54,31 @@ export function VixCard(): React.ReactElement {
     };
   }, []);
   return (
-    <div className="rounded-xl border bg-white shadow p-4">
-      <div className="text-sm text-gray-600">Volatility (VIX)</div>
-      <div className="mt-1 text-2xl font-mono">{fixed2(data?.value ?? undefined)}</div>
-      <div className="text-sm text-gray-600">7-Day Avg: {fixed2(data?.avg7 ?? undefined)}</div>
-      {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
-    </div>
+    <Card className="bg-background-raised">
+      <CardHeader className="space-y-1 px-panel pt-panel pb-gutter">
+        <CardTitle className="text-heading-sm">Volatility (VIX)</CardTitle>
+        <CardDescription className="text-body text-muted-foreground">
+          Spot and 7-day smoothing from volatility feed.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 px-panel pb-panel pt-0">
+        <div>
+          <p className="text-body-xs uppercase tracking-[0.3em] text-muted-foreground">
+            Index
+          </p>
+          <p className="text-heading-lg font-mono text-foreground">
+            {fixed2(data?.value ?? undefined)}
+          </p>
+        </div>
+        <p className="text-body text-muted-foreground">
+          7-day avg:{" "}
+          <span className="font-semibold text-foreground">
+            {fixed2(data?.avg7 ?? undefined)}
+          </span>
+        </p>
+        {error ? <p className="text-body-xs text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -77,17 +105,32 @@ export function RsiCard({ symbol }: RsiCardProps) {
       alive = false;
     };
   }, [symbol]);
-  const statusTone = !data?.rsi ? "text-gray-700" : data.rsi > 70 || data.rsi < 30 ? "text-red-600" : "text-gray-700";
+  const isExtreme = data?.rsi !== undefined && (data.rsi > 70 || data.rsi < 30);
+  const statusTone = !data?.rsi
+    ? "text-muted-foreground"
+    : isExtreme
+      ? "text-warning"
+      : "text-foreground";
   return (
-    <div className="rounded-xl border bg-white shadow p-4">
-      <div className="text-sm text-gray-600">RSI (14)</div>
-      <div className={`mt-1 text-2xl font-mono ${statusTone}`}>{fixed2(data?.rsi)}</div>
-      <div className="text-sm text-gray-600">{data?.state ?? "—"}</div>
-      <div className="mt-2 h-2 w-full rounded bg-gray-100">
-        <div className="h-2 rounded bg-blue-500" style={{ width: `${Math.max(0, Math.min(100, data?.rsi ?? 0))}%` }} />
-      </div>
-      {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
-    </div>
+    <Card className="bg-background-raised">
+      <CardHeader className="space-y-1 px-panel pt-panel pb-gutter">
+        <CardTitle className="text-heading-sm">RSI (14)</CardTitle>
+        <CardDescription className="text-body text-muted-foreground">
+          {symbol} swing state from the trend engine.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 px-panel pb-panel pt-0">
+        <p className={`text-heading-lg font-mono ${statusTone}`}>{fixed2(data?.rsi)}</p>
+        <p className="text-body text-muted-foreground">{data?.state ?? "—"}</p>
+        <div className="mt-1 h-2 w-full rounded-full bg-background-muted">
+          <div
+            className="h-full rounded-full bg-primary transition-all"
+            style={{ width: `${Math.max(0, Math.min(100, data?.rsi ?? 0))}%` }}
+          />
+        </div>
+        {error ? <p className="text-body-xs text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -110,8 +153,10 @@ export function TrendCard({ symbol }: TrendCardProps) {
   }, [symbol]);
 
   const formatPercent = (value?: number) => {
-    if (value === undefined || value === null) return { text: "—", color: "text-gray-400" };
-    const color = value >= 0 ? "text-green-400" : "text-red-400";
+    if (value === undefined || value === null) {
+      return { text: "—", color: "text-muted-foreground" };
+    }
+    const color = value >= 0 ? "text-success" : "text-destructive";
     return { text: `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`, color };
   };
 
@@ -129,24 +174,37 @@ export function TrendCard({ symbol }: TrendCardProps) {
       price != null && sma != null && sma !== 0 ? ((price - sma) / sma) * 100 : undefined;
 
     return (
-      <div className="flex items-center text-xs">
-        <div className="text-gray-600 w-14 flex-shrink-0">{label}</div>
-        <div className="font-mono w-14 text-right flex-shrink-0">{sma ? sma.toFixed(1) : "—"}</div>
-        <div className={`font-mono w-14 text-right flex-shrink-0 ${formatPercent(percentDiff).color}`}>{formatPercent(percentDiff).text}</div>
+      <div className="flex items-center text-body">
+        <div className="w-16 flex-shrink-0 text-body font-semibold text-muted-foreground">
+          {label}
+        </div>
+        <div className="w-20 flex-shrink-0 text-right font-mono text-foreground">
+          {sma ? sma.toFixed(1) : "—"}
+        </div>
+        <div
+          className={`w-20 flex-shrink-0 text-right font-mono ${formatPercent(percentDiff).color}`}
+        >
+          {formatPercent(percentDiff).text}
+        </div>
       </div>
     );
   };
 
   return (
-    <div className="rounded-xl border bg-white shadow p-4">
-      <div className="text-sm text-gray-600">Trend</div>
-      <div className="mt-2 space-y-1">
+    <Card className="bg-background-raised">
+      <CardHeader className="space-y-1 px-panel pt-panel pb-gutter">
+        <CardTitle className="text-heading-sm">Trend</CardTitle>
+        <CardDescription className="text-body text-muted-foreground">
+          SMA distances for {symbol}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-1.5 px-panel pb-panel pt-0">
         <Row label="SMA 10" sma={data?.sma10} price={data?.price} />
         <Row label="SMA 20" sma={data?.sma20} price={data?.price} />
         <Row label="SMA 50" sma={data?.sma50} price={data?.price} />
         <Row label="SMA 200" sma={data?.sma200} price={data?.price} />
-      </div>
-      {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
-    </div>
+        {error ? <p className="pt-2 text-body-xs text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
   );
 }

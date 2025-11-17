@@ -1,4 +1,12 @@
 import { useEffect, useRef } from "react";
+
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   IChartApi,
   ISeriesApi,
@@ -26,7 +34,10 @@ export const INDEX_SERIES: SymbolConfig[] = [
   { symbol: "IWM", color: "#ff8c42" },
 ];
 
-const CHART_HEIGHT = 255;
+const DEFAULT_CHART_HEIGHT = 320;
+const CHART_BG = "#141823";
+const CHART_GRID = "#2a3040";
+const CHART_TEXT = "#dee5ff";
 
 const PST_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/Los_Angeles",
@@ -111,13 +122,13 @@ export function IndexDivergenceCard() {
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight || CHART_HEIGHT,
+      height: containerRef.current.clientHeight || DEFAULT_CHART_HEIGHT,
       layout: {
-        background: { color: "#1f2937" },
-        textColor: "#f3f4f6",
+        background: { color: CHART_BG },
+        textColor: CHART_TEXT,
       },
       rightPriceScale: {
-        borderColor: "#4b5563",
+        borderColor: CHART_GRID,
         scaleMargins: {
           top: 0.1,
           bottom: 0.1,
@@ -127,14 +138,14 @@ export function IndexDivergenceCard() {
         timeFormatter: formatTimeToPst,
       },
       timeScale: {
-        borderColor: "#4b5563",
+        borderColor: CHART_GRID,
         timeVisible: true,
         secondsVisible: false,
         tickMarkFormatter: pstTickFormatter,
       },
       grid: {
-        horzLines: { color: "#374151" },
-        vertLines: { color: "#374151" },
+        horzLines: { color: CHART_GRID },
+        vertLines: { color: CHART_GRID },
       },
       handleScroll: {
         mouseWheel: false,
@@ -172,7 +183,10 @@ export function IndexDivergenceCard() {
       if (!containerRef.current || !chartRef.current) {
         return;
       }
-      chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
+      chartRef.current.applyOptions({
+        width: containerRef.current.clientWidth,
+        height: containerRef.current.clientHeight || DEFAULT_CHART_HEIGHT,
+      });
     };
 
     window.addEventListener("resize", resizeHandler);
@@ -226,25 +240,34 @@ export function IndexDivergenceCard() {
   }, []);
 
   return (
-    <div className="rounded bg-gray-800 p-4 shadow">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-xl font-bold text-gray-100">Index Divergence</h2>
-        <div className="flex gap-3 text-sm text-gray-400">
-          {INDEX_SERIES.map(({ symbol, color }) => (
-            <div key={symbol} className="flex items-center gap-1">
-              <span
-                className="inline-block h-2 w-2 rounded-full"
-                style={{ backgroundColor: color }}
-              />
-              {symbol}
-            </div>
-          ))}
+    <Card className="bg-background-raised">
+      <CardHeader className="gap-3 px-panel pt-panel pb-gutter">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <CardTitle className="text-heading-md">Index Divergence</CardTitle>
+          <div className="flex flex-wrap items-center gap-3 text-body text-muted-foreground">
+            {INDEX_SERIES.map(({ symbol, color }) => (
+              <span key={symbol} className="inline-flex items-center gap-2">
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: color }}
+                  aria-hidden="true"
+                />
+                {symbol}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
-      <p className="mb-4 text-sm text-gray-400">
-        Daily performance over the past six months, normalised to each series&apos; starting value.
-      </p>
-      <div ref={containerRef} className="w-full" style={{ height: CHART_HEIGHT }} />
-    </div>
+        <CardDescription className="text-body text-muted-foreground">
+          Daily performance over the last six months, normalised to each index&apos;s first
+          close.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="min-w-0 px-panel pb-panel pt-0">
+        <div
+          ref={containerRef}
+          className="mt-2 h-[260px] w-full min-w-0 overflow-hidden rounded-lg border border-border/80 bg-background md:h-[320px] xl:h-[360px]"
+        />
+      </CardContent>
+    </Card>
   );
 }
